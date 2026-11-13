@@ -27,6 +27,11 @@ P0.7b turns the repo into job-hunt proof: a README with the architecture, a shor
 
 ## Consequences
 
-- The README has been rendered locally; GitHub's own preview, the licence and the mirror itself wait for Abbas.
+- Published 2026-11-13 on Abbas's yes: https://github.com/digiscalability/content-engine, one fresh commit authored as "Abbas Ali" with the public-repo identity email, cloned locally at `githubCLONES\content-engine-public`. Licensed MIT (Abbas's choice, 2026-11-13), copyright in his legal name as the Fact Sheet sets for licences.
+- Updating the mirror works the same way, and every push still waits for Abbas's OK:
+  1. Build a new tree with `build_public_mirror.py`.
+  2. Replace the public clone's files with it.
+  3. Stage them by name.
+  4. Commit "sync with private <sha>".
 - A Fact Sheet edit can change the parsed never list. `get_playbook` shows the current terms.
 - If the planning docs are ever published, they need their own scrub first.

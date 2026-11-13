@@ -113,4 +113,4 @@ Requirement ids in the code and the ADRs (FR-…, GR-…, NFR-…) point to the 
 
 ---
 
-Built by [Abbas Ali](https://www.linkedin.com/in/-abbas-ali), with Claude Code as pair programmer.
+Built by [Abbas Ali](https://www.linkedin.com/in/-abbas-ali), with Claude Code as pair programmer. [MIT licence](LICENSE).
