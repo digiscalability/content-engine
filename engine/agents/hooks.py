@@ -38,7 +38,10 @@ from engine.settings import REPO_ROOT
 ENGINE = "mcp__engine__"
 H3_MATCHER = "|".join(f"{ENGINE}{t}" for t in ("synthesize_voice", "request_avatar", "render_post"))
 READ_ROOTS = tuple(REPO_ROOT / p for p in ("config", "engine/prompts", "media/work"))
-SECRET_NAME = re.compile(r"^\.env|secret|credential|\.pem$|serviceaccount", re.IGNORECASE)
+# the commit scan's secret-bearing types too (scripts/check_secrets.py)
+SECRET_NAME = re.compile(
+    r"^\.env|secret|credential|\.pem$|\.key$|\.p12$|\.pfx$|serviceaccount", re.IGNORECASE
+)
 SHORT_NAME = re.compile(r"~\d")  # an 8.3 short-name segment such as CREDEN~1.JSO
 
 Decision = Callable[[str, dict], "str | None"]
@@ -86,7 +89,13 @@ def h2_read_path(tool_input: dict, roots: tuple[Path, ...] = READ_ROOTS) -> str 
     if not raw:
         return "Read needs a file_path (H2)"
     text = str(raw).replace("\\", "/")
+    # Refused before any file system call: resolving a UNC path would send this machine's
+    # credentials to that host, and another drive may be a mapped network share.
+    if text.startswith("//"):
+        return f"Read of {raw} denied: network and device paths are not read (H2)"
     drive, rest = os.path.splitdrive(text)
+    if drive and os.path.normcase(drive) != os.path.normcase(REPO_ROOT.drive):
+        return f"Read of {raw} denied: only the repo's own drive is read (H2)"
     if ":" in rest:
         return f"Read of {raw} denied: alternate data streams are not read (H2)"
     if SHORT_NAME.search(rest):
@@ -96,6 +105,11 @@ def h2_read_path(tool_input: dict, roots: tuple[Path, ...] = READ_ROOTS) -> str 
         path = REPO_ROOT / path
     if any(SECRET_NAME.search(part) for part in path.parts):
         return f"Read of {raw} denied: secret-looking name (H2)"
+    outside = f"Read of {raw} denied: outside config/, engine/prompts/ and media/work/ (H2)"
+    lexical = os.path.normcase(os.path.normpath(path))
+    lexical_roots = [os.path.normcase(os.path.normpath(root)) for root in roots]
+    if not any(lexical == r or lexical.startswith(r + os.sep) for r in lexical_roots):
+        return outside  # only paths inside the roots are ever resolved
     try:
         resolved = _real(path, strict=True)
     except OSError:
@@ -106,7 +120,7 @@ def h2_read_path(tool_input: dict, roots: tuple[Path, ...] = READ_ROOTS) -> str 
         real_root = _real(root, strict=False)
         if resolved == real_root or resolved.startswith(real_root + os.sep):
             return None
-    return f"Read of {raw} denied: outside config/, engine/prompts/ and media/work/ (H2)"
+    return outside
 
 
 # H3 ----------------------------------------------------------------------------------------

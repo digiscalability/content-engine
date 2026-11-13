@@ -372,3 +372,33 @@ def test_a_guard_that_crashes_blocks_the_call(ctx, monkeypatch):
     out = tools.call("submit_edit_plan", plan_input(brief_id, own_asset(ctx)))
     assert out["denied"] is True and "H4 failed" in out["errors"][0]
     assert ctx.conn.execute("SELECT COUNT(*) FROM edit_plans").fetchone()[0] == 0
+
+
+# H2 before any file system call (automated security review of the public push) -------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"\\attacker.example\share\config\engine.yaml",  # UNC: would send NTLM
+        "//attacker.example/share/engine.yaml",
+        r"\\?\C:\Windows\win.ini",  # device namespace
+        r"\\.\pipe\x",
+        "Z:/config/engine.yaml",  # another drive, maybe a mapped share
+    ],
+)
+def test_h2_refuses_network_device_and_other_drive_paths_without_touching_them(path, monkeypatch):
+    def no_lookup(*args, **kwargs):
+        raise AssertionError("H2 resolved a path it should have refused first")
+
+    monkeypatch.setattr(hooks.os.path, "realpath", no_lookup)
+    reason = hooks.h2_read_path({"file_path": path})
+    assert reason is not None and "(H2)" in reason
+
+
+@pytest.mark.parametrize("name", ["deploy.key", "cert.p12", "cert.pfx"])
+def test_h2_refuses_the_same_secret_file_types_as_the_commit_scan(name, tmp_path):
+    secret = tmp_path / name
+    secret.write_text("x", encoding="utf-8")
+    reason = hooks.h2_read_path({"file_path": str(secret)}, roots=(tmp_path,))
+    assert reason is not None and "secret" in reason

@@ -9,6 +9,7 @@ Choices are recorded in ADR 0012.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -213,6 +214,34 @@ def _export(
     }
 
 
+VOICE_FILE = re.compile(r"^script-(\d+)\.wav$")  # synthesize_voice's file name
+
+
+def _voiced_scripts(ctx: ToolContext, plan: EditPlan, brief_id: int) -> list[int]:
+    """The scripts whose voice the plan uses, each of them this brief's (the QA gate checks
+    what was voiced, not the newest script version)."""
+    ids: list[int] = []
+    for segment in plan.audio.voice:
+        row = ctx.conn.execute(
+            "SELECT path FROM assets WHERE id = ?", (segment.asset_id,)
+        ).fetchone()
+        match = VOICE_FILE.match(Path(row["path"]).name) if row else None
+        owner = (
+            ctx.conn.execute(
+                "SELECT brief_id FROM scripts WHERE id = ?", (int(match.group(1)),)
+            ).fetchone()
+            if match
+            else None
+        )
+        if owner is None or owner["brief_id"] != brief_id:
+            raise ToolError(
+                f"voice asset {segment.asset_id} is not a voiced script of brief {brief_id}"
+            )
+        if int(match.group(1)) not in ids:
+            ids.append(int(match.group(1)))
+    return ids
+
+
 def render_post(ctx: ToolContext, args: RenderInput) -> dict:
     providers = require_providers(ctx)
     row = ctx.conn.execute("SELECT * FROM edit_plans WHERE id = ?", (args.edit_plan_id,)).fetchone()
@@ -225,11 +254,9 @@ def render_post(ctx: ToolContext, args: RenderInput) -> dict:
             "overlay blocks come from the identity's approved look (P0.8); "
             "until then plans carry captions only"
         )
-    script = ctx.conn.execute(
-        "SELECT id FROM scripts WHERE brief_id = ? ORDER BY version DESC LIMIT 1", (brief["id"],)
-    ).fetchone()
-    if plan.captions and script is None:
-        raise ToolError(f"brief {brief['id']} has no script to caption")
+    script_ids = _voiced_scripts(ctx, plan, brief["id"])
+    if plan.captions and not script_ids:
+        raise ToolError(f"brief {brief['id']}: captions need a voiced script in the plan")
     sources = _sources(ctx, plan)
     work = ctx.work_dir / f"render-{args.edit_plan_id}"
     name = f"{brief['identity_id']}-{brief['id']}-{args.edit_plan_id}"
@@ -240,7 +267,7 @@ def render_post(ctx: ToolContext, args: RenderInput) -> dict:
     try:
         mix = mix_audio(plan, sources, work, settings, providers.run)
         if plan.captions:
-            spoken = _script(ctx, script["id"])[1].spoken_text
+            spoken = " ".join(_script(ctx, i)[1].spoken_text for i in script_ids)
             heard = providers.transcriber(spoken).transcribe(mix).words
             words = refine_starts(heard, voice_onsets(plan, sources, providers.run))
             captions = render_captions(
@@ -262,6 +289,7 @@ def render_post(ctx: ToolContext, args: RenderInput) -> dict:
         "render_id": render_id,
         "edit_plan_id": args.edit_plan_id,
         "brief_id": brief["id"],
+        "scripts": script_ids,  # what the voice says; QA checks these, not the newest version
         "identity": brief["identity_id"],
         "format": brief["format"],
         "file": output.name,

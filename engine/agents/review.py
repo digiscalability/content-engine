@@ -62,15 +62,18 @@ def render_view(ctx: ToolContext, render_id: int) -> RenderView:
     if render is None:
         raise ToolError(f"no render {render_id}")
     brief = require_brief(ctx, render["brief_id"])
-    script = ctx.conn.execute(
-        "SELECT body FROM scripts WHERE brief_id = ? ORDER BY version DESC LIMIT 1",
-        (brief["id"],),
-    ).fetchone()
-    beats = (
-        [b.model_dump() for b in ScriptSubmission.model_validate_json(script["body"]).beats]
-        if script
-        else []
-    )
+    script_ids = json.loads(render["report"] or "{}").get("scripts")
+    if not script_ids:  # fail closed: check what was voiced, never a guess at it
+        raise ToolError(f"render {render_id} has no record of its voiced script; render it again")
+    beats = []
+    for script_id in script_ids:
+        script = ctx.conn.execute(
+            "SELECT brief_id, body FROM scripts WHERE id = ?", (script_id,)
+        ).fetchone()
+        if script is None or script["brief_id"] != brief["id"]:
+            raise ToolError(f"render {render_id} names script {script_id}, not of its brief")
+        body = ScriptSubmission.model_validate_json(script["body"])
+        beats += [b.model_dump() for b in body.beats]
     words_file = Path(render["path"]).parent / "words.json"
     words = (
         [w["text"] for w in json.loads(words_file.read_text(encoding="utf-8"))]

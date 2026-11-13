@@ -320,3 +320,26 @@ def test_create_draft_refuses_a_channel_gone_from_the_config(ctx):
     ctx.config.identities["selfhelp"] = selfhelp.model_copy(update={"channels": [tiktok]})
     result = call_tool(ctx, "create_draft", {"render_id": render_id, "posts": [COPY]})
     assert result["ok"] is False and "no longer has a youtube channel" in result["errors"][0]
+
+
+def test_render_post_refuses_a_voice_from_another_brief(ctx):
+    _, script_a = scripted(ctx)
+    voice_a = call_tool(ctx, "synthesize_voice", {"script_id": script_a})["asset_id"]
+    brief_b, script_b = scripted(ctx)
+    ctx.conn.execute(
+        "INSERT INTO assets (source_id, sha256, path, media_kind, duration, rights_type, "
+        "people_release) VALUES ('engine', ?, 'b.mp4', 'video', 40, 'ai_generated', 'none')",
+        ("e" * 64,),
+    )
+    video = ctx.conn.execute("SELECT id FROM assets WHERE path = 'b.mp4'").fetchone()[0]
+    plan = {
+        "timeline": [{"asset_id": video, "in": 0, "out": 30, "role": "avatar"}],
+        "audio": {"voice": [{"asset_id": voice_a, "at": 0, "out": 20}]},
+        "captions": {"block": "captions"},
+        "look": {"id": "selfhelp", "version": 1},
+    }
+    plan_id = call_tool(ctx, "submit_edit_plan", {"brief_id": brief_b, "plan": plan})[
+        "edit_plan_id"
+    ]
+    result = call_tool(ctx, "render_post", {"edit_plan_id": plan_id})
+    assert result["ok"] is False and "not a voiced script of brief" in result["errors"][0]

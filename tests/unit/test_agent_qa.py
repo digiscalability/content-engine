@@ -4,6 +4,7 @@ submit_qa_review (FR-QA-7) and the copy check in create_draft (FR-QA-8)."""
 import json
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -81,7 +82,7 @@ def ctx(tmp_path, config):
 def rendered_post(ctx, beats=CLEAN) -> int:
     """A brief, script, edit plan and render row, with the render folder's words.json."""
     brief_id = call_tool(ctx, "submit_brief", BRIEF)["brief_id"]
-    call_tool(ctx, "submit_script", {"brief_id": brief_id, "beats": beats})
+    script = call_tool(ctx, "submit_script", {"brief_id": brief_id, "beats": beats})
     asset = ctx.conn.execute(
         "INSERT INTO assets (source_id, sha256, path, media_kind, duration, rights_type, "
         "people_release) VALUES ('engine', ?, 'avatar.mp4', 'video', 40, 'ai_generated', 'none')",
@@ -99,9 +100,10 @@ def rendered_post(ctx, beats=CLEAN) -> int:
     (folder / "post.mp4").write_bytes(b"mp4")
     words = [{"text": w, "start": 0.1, "end": 0.2} for b in beats for w in b["text"].split()]
     (folder / "words.json").write_text(json.dumps(words), "utf-8")
+    report = json.dumps({"scripts": [script["script_id"]]})  # render_post records the voiced one
     render_id = ctx.conn.execute(
-        "INSERT INTO renders (edit_plan_id, path) VALUES (?, ?)",
-        (plan_id, str(folder / "post.mp4")),
+        "INSERT INTO renders (edit_plan_id, path, report) VALUES (?, ?, ?)",
+        (plan_id, str(folder / "post.mp4"), report),
     ).lastrowid
     advance_posts(ctx.conn, brief_id, "rendered", render_id=render_id)
     return render_id
@@ -234,11 +236,11 @@ def test_get_render_report_gives_the_reviewer_the_report_script_and_checks(ctx):
     render_id = rendered_post(ctx)
     ctx.conn.execute(
         "UPDATE renders SET report = ? WHERE id = ?",
-        (json.dumps({"tiers": {"ai_generated": 35.0}}), render_id),
+        (json.dumps({"tiers": {"ai_generated": 35.0}, "scripts": [1]}), render_id),
     )
     call_tool(ctx, "run_qa_checks", {"render_id": render_id})
     view = call_tool(ctx, "get_render_report", {"render_id": render_id})
-    assert view["ok"] and view["report"] == {"tiers": {"ai_generated": 35.0}}
+    assert view["ok"] and view["report"]["tiers"] == {"ai_generated": 35.0}
     assert view["script"][0]["text"] == CLEAN[0]["text"]
     assert view["captions"].startswith("Start smaller")
     assert {c["name"] for c in view["checks"]} == CHECKS
@@ -276,3 +278,26 @@ def test_create_draft_needs_the_stored_passes(ctx):
     ctx.conn.execute("UPDATE posts SET state = 'qa_passed'")  # no checks, no review
     refused = call_tool(ctx, "create_draft", {"render_id": render_id, "posts": [COPY]})
     assert refused["ok"] is False and "run_qa_checks" in refused["errors"][0]
+
+
+# QA checks what was voiced, not the newest script (automated security review) ---------------
+
+FIRST_PERSON = [{"text": "When I worked late, we cut corners and paid for it.", "target_s": 5}] * 7
+
+
+def test_qa_checks_the_voiced_script_not_a_newer_version(ctx):
+    render_id = rendered_post(ctx, FIRST_PERSON)  # the voice and captions say this
+    brief_id = ctx.conn.execute("SELECT brief_id FROM posts").fetchone()[0]
+    call_tool(ctx, "submit_script", {"brief_id": brief_id, "beats": CLEAN})  # a clean v2 after
+    folder = Path(ctx.conn.execute("SELECT path FROM renders").fetchone()[0]).parent
+    (folder / "words.json").unlink()  # a plan without captions: only the script tells
+    result = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    assert result["passed"] is False
+    assert checks(ctx, render_id)["claims_about_abbas"] == "fail"
+
+
+def test_qa_refuses_a_render_with_no_record_of_its_script(ctx):
+    render_id = rendered_post(ctx)
+    ctx.conn.execute("UPDATE renders SET report = NULL")
+    result = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    assert result["ok"] is False and "voiced script" in result["errors"][0]
