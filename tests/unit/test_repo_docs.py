@@ -1,0 +1,66 @@
+"""Repo docs and config skeleton (P0.1): PROGRESS tracks every SRD slice; config parses."""
+
+import re
+from pathlib import Path
+
+import pytest
+import yaml
+
+ID = re.compile(r"\b(?:G0\.\d[abc]?|P\d\.\d+[a-z]?)\b")
+LINE = re.compile(r"^\s*- \[[ x]\] \*\*(?P<id>[^*]+)\*\*", re.MULTILINE)
+# The SRD, build prompt and PROGRESS stay private; the public mirror leaves them out.
+PRIVATE_DOCS = pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[2] / "docs" / "SRD.md").is_file(),
+    reason="planning docs are not in the public mirror",
+)
+
+
+def srd_slice_ids(repo_root) -> set[str]:
+    srd = (repo_root / "docs" / "SRD.md").read_text(encoding="utf-8")
+    section = srd[srd.index("\n## §18 ") : srd.index("\n## §20 ")]
+    return set(ID.findall(section))
+
+
+@PRIVATE_DOCS
+def test_srd_parse_finds_the_known_slices(repo_root):
+    ids = srd_slice_ids(repo_root)
+    assert {"G0.1", "G0.9a", "P0.1", "P0.6b", "P0.7b", "P1.8", "P2.7", "P3.4", "P5.1"} <= ids
+
+
+@PRIVATE_DOCS
+def test_progress_lists_every_srd_slice(repo_root):
+    progress = (repo_root / "docs" / "PROGRESS.md").read_text(encoding="utf-8")
+    listed = {m.group("id") for m in LINE.finditer(progress)}
+    assert srd_slice_ids(repo_root) - listed == set()
+
+
+def test_config_yaml_files_parse(repo_root):
+    files = sorted((repo_root / "config").rglob("*.yaml"))
+    assert {f.name for f in files} >= {"engine.yaml", "sources.yaml", "selfhelp.yaml"}
+    for path in files:
+        assert isinstance(yaml.safe_load(path.read_text(encoding="utf-8")), dict), path
+
+
+def test_selfhelp_starts_at_l0(repo_root):
+    identity = yaml.safe_load(
+        (repo_root / "config" / "identities" / "selfhelp.yaml").read_text(encoding="utf-8")
+    )
+    assert identity["id"] == "selfhelp"
+    assert identity["autonomy_level"] == 0
+    assert identity["formats"] == {"C": 1.0}
+    youtube = [c for c in identity["channels"] if c["platform"] == "youtube"]
+    assert youtube and youtube[0]["ai_disclosure"] == "required"
+
+
+def test_playbook_has_rules_and_learned_sections(repo_root):
+    playbook = (repo_root / "config" / "identities" / "selfhelp.playbook.md").read_text(
+        encoding="utf-8"
+    )
+    rules = playbook.index("## Rules (Abbas-owned)")
+    learned = playbook.index("## Learned (retro-owned)")
+    assert rules < learned
+
+
+def test_sources_start_empty(repo_root):
+    sources = yaml.safe_load((repo_root / "config" / "sources.yaml").read_text(encoding="utf-8"))
+    assert sources == {"sources": []}

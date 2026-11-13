@@ -1,0 +1,104 @@
+{
+ "source": "discipline.wav",
+ "model": "large-v3",
+ "language": "en",
+ "refined_with": "speech_onsets (ffmpeg silencedetect -40 dB, 0.12 s)",
+ "words": [
+  {
+   "text": "Discipline",
+   "start": 0.0,
+   "end": 0.52,
+   "probability": 0.94
+  },
+  {
+   "text": "is",
+   "start": 0.52,
+   "end": 0.62,
+   "probability": 0.999
+  },
+  {
+   "text": "a",
+   "start": 0.62,
+   "end": 0.72,
+   "probability": 0.999
+  },
+  {
+   "text": "skill",
+   "start": 0.72,
+   "end": 0.96,
+   "probability": 0.999
+  },
+  {
+   "text": "you",
+   "start": 0.96,
+   "end": 1.14,
+   "probability": 0.995
+  },
+  {
+   "text": "can",
+   "start": 1.14,
+   "end": 1.28,
+   "probability": 1.0
+  },
+  {
+   "text": "practice.",
+   "start": 1.28,
+   "end": 1.68,
+   "probability": 0.984
+  },
+  {
+   "text": "Start",
+   "start": 2.903,
+   "end": 3.06,
+   "probability": 0.995
+  },
+  {
+   "text": "small,",
+   "start": 3.06,
+   "end": 3.44,
+   "probability": 0.999
+  },
+  {
+   "text": "keep",
+   "start": 4.145,
+   "end": 4.22,
+   "probability": 0.998
+  },
+  {
+   "text": "the",
+   "start": 4.22,
+   "end": 4.42,
+   "probability": 1.0
+  },
+  {
+   "text": "promise,",
+   "start": 4.42,
+   "end": 4.78,
+   "probability": 0.999
+  },
+  {
+   "text": "and",
+   "start": 5.473,
+   "end": 5.523,
+   "probability": 0.999
+  },
+  {
+   "text": "repeat",
+   "start": 5.48,
+   "end": 5.78,
+   "probability": 0.999
+  },
+  {
+   "text": "it",
+   "start": 5.78,
+   "end": 6.0,
+   "probability": 1.0
+  },
+  {
+   "text": "tomorrow.",
+   "start": 6.0,
+   "end": 6.24,
+   "probability": 0.999
+  }
+ ]
+}

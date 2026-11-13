@@ -1,0 +1,33 @@
+<template>
+  <style>
+    #root { position: absolute; inset: 0; font-family: "${font_family}", sans-serif; }
+    .cap { position: absolute; left: 0; right: 0; bottom: ${bottom}px; text-align: center; overflow: visible; }
+    .line { display: inline-block; font-size: ${font_size}px; }
+    .w {
+      display: inline-block; margin: 0 0.1em; color: ${ink}; font-weight: ${font_weight};
+      letter-spacing: -0.02em; -webkit-text-stroke: ${outline_px}px ${outline}; paint-order: stroke fill;
+    }
+  </style>
+  <div id="root" data-composition-id="captions" data-width="1080" data-height="1920">
+${clips}
+  </div>
+  <script>
+    // Written by engine/produce/captions.py from Whisper word timings (FR-PRD-6, ADR 0009).
+    const groups = ${groups_json};
+    const fit = window.__hyperframes && window.__hyperframes.fitTextFontSize;
+    const tl = gsap.timeline({ paused: true });
+    for (const g of groups) {
+      if (fit) {
+        const size = fit(g.text, { fontFamily: "${font_family}", fontWeight: ${font_weight}, maxWidth: ${max_width} }).fontSize;
+        document.querySelector(g.line).style.fontSize = Math.min(size, ${font_size}) + "px";
+      }
+      tl.fromTo(g.line, { opacity: 0, scale: 0.92 }, { opacity: 1, scale: 1, duration: 0.12, ease: "power3.out" }, g.start);
+      tl.to(g.line, { opacity: 0, duration: 0.08, ease: "power2.in" }, Math.max(g.start, g.end - 0.08));
+      for (const [id, start, end] of g.words) {
+        tl.fromTo(id, { color: "${ink}" }, { color: "${accent}", duration: 0.05 }, start);
+        tl.to(id, { color: "${ink}", duration: 0.05 }, Math.max(start, end - 0.05));
+      }
+    }
+    window.__timelines["captions"] = tl;
+  </script>
+</template>

@@ -1,0 +1,31 @@
+# Secrets (SRD §3.4): .env is filled by Abbas and never committed
+.env
+.env.*
+!.env.example
+SECRETS.md
+*.pem
+*.key
+serviceAccount*.json
+
+# Python and tools
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Engine state and media (SRD §5.7)
+data/
+media/
+!docs/media/
+work/
+*.db
+
+# HyperFrames working state (check reports, history, ad-hoc renders)
+hyperframes/**/.hyperframes/
+hyperframes/**/renders/
+
+# Style references are deleted after measurement (C10); only the folders are tracked
+references/inbox/**
+!references/inbox/**/
+!references/inbox/**/.gitkeep

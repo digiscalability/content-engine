@@ -1,0 +1,71 @@
+{
+    "text":  "Discipline is a skill you can practise. Start small, keep the promise, and repeat it tomorrow.",
+    "voice":  "Microsoft Zira Desktop",
+    "rate":  0,
+    "words":  [
+                  {
+                      "text":  "Discipline",
+                      "start":  0.1
+                  },
+                  {
+                      "text":  "is",
+                      "start":  0.565
+                  },
+                  {
+                      "text":  "a",
+                      "start":  0.705
+                  },
+                  {
+                      "text":  "skill",
+                      "start":  0.76
+                  },
+                  {
+                      "text":  "you",
+                      "start":  1.095
+                  },
+                  {
+                      "text":  "can",
+                      "start":  1.22
+                  },
+                  {
+                      "text":  "practise",
+                      "start":  1.39
+                  },
+                  {
+                      "text":  "Start",
+                      "start":  2.89
+                  },
+                  {
+                      "text":  "small",
+                      "start":  3.27
+                  },
+                  {
+                      "text":  "keep",
+                      "start":  4.13
+                  },
+                  {
+                      "text":  "the",
+                      "start":  4.385
+                  },
+                  {
+                      "text":  "promise",
+                      "start":  4.48
+                  },
+                  {
+                      "text":  "and",
+                      "start":  5.47
+                  },
+                  {
+                      "text":  "repeat",
+                      "start":  5.6
+                  },
+                  {
+                      "text":  "it",
+                      "start":  5.97
+                  },
+                  {
+                      "text":  "tomorrow",
+                      "start":  6.08
+                  }
+              ]
+}

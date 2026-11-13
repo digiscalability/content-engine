@@ -1,0 +1,72 @@
+# Engine settings (SRD §12). Values are the SRD's starting values; Abbas may change them.
+# Validated by the config models from slice P0.2. No secrets here: keys live in .env.
+
+# §5.3 and C5: every agent runs claude-opus-5-5; cost is tuned with effort per agent.
+# Moving a worker to claude-sonnet-5-5 or claude-haiku-5-5 is a change to this file.
+agents:
+  orchestrator:  { model: claude-opus-5-5, effort: medium, max_turns: 60 }
+  scriptwriter:  { model: claude-opus-5-5, effort: high,   max_turns: 25 }
+  moment_scorer: { model: claude-opus-5-5, effort: low,    max_turns: 15 }
+  qa_reviewer:   { model: claude-opus-5-5, effort: high,   max_turns: 10 }
+  trend_scout:   { model: claude-opus-5-5, effort: medium, max_turns: 15 }  # Phase 2
+  retro_analyst: { model: claude-opus-5-5, effort: high,   max_turns: 30 }  # Phase 3
+  source_scout:  { model: claude-opus-5-5, effort: medium, max_turns: 15 }  # Phase 4
+
+# NFR-4: per-run and monthly caps; hard stop at each vendor's cap.
+budgets:
+  claude:
+    max_budget_usd: { daily: 3, weekly: 5 }
+    monthly_cap_usd: 60
+  elevenlabs:
+    monthly_char_cap: 78600      # D10: the engine's 60% of 131,000
+    account_floor_chars: 20000   # C16: stop voice work below this live balance
+
+# §5.7 layout, relative to the repo root unless absolute.
+paths:
+  db: data/engine.db
+  media: media
+  raw: media/raw
+  work: media/work
+  renders: media/renders
+  avatar_inbox: media/inbox/avatar
+  polished_inbox: media/inbox/polished
+  music_library: media/library/music
+  references_inbox: references/inbox
+  reports: reports
+  logs: "%LOCALAPPDATA%/content-engine/logs"   # §2.3: <job>-<yyyy-MM-dd>.log
+
+# §13, Australia/Melbourne. Registered as Task Scheduler jobs only after Abbas's OK.
+schedule:
+  timezone: Australia/Melbourne
+  ingest: "02:00"
+  index_films_window: ["00:00", "06:00"]
+  daily: "04:00"
+  metrics_reconcile_every_hours: 6
+  weekly: "Sun 20:00"
+
+# NFR-5
+disk:
+  warn_free_gb: 60
+  stop_free_gb: 40
+
+retention:
+  raw_purge_days_after_last_use: 14
+  renders_keep_days_after_publish: 90
+
+# §6.7
+qa:
+  cross_identity: { frame_similarity_max: 0.80, script_cosine_max: 0.85, lookback_days: 180 }
+  self_dedupe: { script_cosine_max: 0.90, lookback_posts: 50 }
+  caption_coverage_min: 0.95
+  # D9, FR-QA-8: read at run time, never copied into the repo (it holds contact details)
+  fact_sheet: 'C:/claudeSessions/SoloBro/02 - Areas/Career/Public Fact Sheet.md'
+
+# FR-PRD-5
+render:
+  width: 1080
+  height: 1920
+  fps: 30
+  audio_sample_rate: 48000
+loudness:
+  integrated_lufs: -14
+  true_peak_dbtp: -1

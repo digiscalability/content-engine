@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit secret scan (SRD NFR-7). Install once per clone:
+#   git config core.hooksPath .githooks
+# The scanner is stdlib-only, so any Python 3 on PATH will do. No Python means no
+# commit: the hook fails closed rather than letting an unscanned commit through.
+for py in python python3 py; do
+  if command -v "$py" >/dev/null 2>&1; then
+    exec "$py" scripts/check_secrets.py --staged
+  fi
+done
+echo "pre-commit: no Python found; refusing to commit without the secret scan" >&2
+exit 1

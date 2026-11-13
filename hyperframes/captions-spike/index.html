@@ -1,0 +1,113 @@
+<!doctype html>
+<!--
+  P0.3 spike (SRD §7.2, C9): a 5 s portrait caption overlay with a transparent background,
+  rendered to alpha video and composited over footage by ffmpeg. The word timings are a
+  fixed fixture here; from P0.5 the engine writes them from Whisper on the final mix.
+-->
+<html lang="en" data-resolution="portrait">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <script src="assets/gsap.min.js"></script><!-- GSAP 3.15.0, vendored: renders need no CDN (ADR 0001) -->
+    <style>
+      :root {
+        --ink: #ffffff;
+        --accent: #ffd23f;
+        --outline: #111111;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: transparent;
+      }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        font-family: "Inter", sans-serif;
+      }
+      .cap {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 650px;
+        text-align: center;
+        overflow: visible;
+      }
+      .line {
+        display: inline-block;
+      }
+      .w {
+        display: inline-block;
+        margin: 0 0.1em;
+        color: var(--ink);
+        font-size: 92px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        -webkit-text-stroke: 14px var(--outline);
+        paint-order: stroke fill;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="5"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div id="cap-1" class="cap clip" data-start="0.3" data-duration="1.6" data-track-index="1">
+        <div id="cap-1-line" class="line">
+          <span id="w0" class="w">Discipline</span><span id="w1" class="w">is</span
+          ><span id="w2" class="w">a</span><span id="w3" class="w">skill</span>
+        </div>
+      </div>
+      <div id="cap-2" class="cap clip" data-start="2" data-duration="1.5" data-track-index="1">
+        <div id="cap-2-line" class="line">
+          <span id="w4" class="w">you</span><span id="w5" class="w">can</span
+          ><span id="w6" class="w">practise</span>
+        </div>
+      </div>
+      <div id="cap-3" class="cap clip" data-start="3.6" data-duration="1.3" data-track-index="1">
+        <div id="cap-3-line" class="line">
+          <span id="w7" class="w">every</span><span id="w8" class="w">day</span>
+        </div>
+      </div>
+    </div>
+    <script>
+      // [id, start, end] per word, seconds on the root timeline.
+      const words = [
+        ["w0", 0.3, 0.85], ["w1", 0.85, 1.05], ["w2", 1.05, 1.15], ["w3", 1.15, 1.8],
+        ["w4", 2.0, 2.3], ["w5", 2.3, 2.6], ["w6", 2.6, 3.4],
+        ["w7", 3.6, 4.0], ["w8", 4.0, 4.7],
+      ];
+      // [line id, group start, group end]
+      const groups = [
+        ["#cap-1-line", 0.3, 1.9],
+        ["#cap-2-line", 2.0, 3.5],
+        ["#cap-3-line", 3.6, 4.9],
+      ];
+      const tl = gsap.timeline({ paused: true });
+      for (const [line, start, end] of groups) {
+        tl.fromTo(line, { opacity: 0, scale: 0.92 }, { opacity: 1, scale: 1, duration: 0.15, ease: "power3.out" }, start);
+        tl.to(line, { opacity: 0, duration: 0.12, ease: "power2.in" }, end - 0.12);
+      }
+      for (const [id, start, end] of words) {
+        tl.fromTo("#" + id, { color: "#ffffff" }, { color: "#ffd23f", duration: 0.06 }, start);
+        tl.to("#" + id, { color: "#ffffff", duration: 0.06 }, end);
+      }
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

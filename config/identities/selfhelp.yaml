@@ -1,0 +1,33 @@
+# First identity (SRD §16, D3, C2). Shape from SRD §12.
+id: selfhelp
+display_name: ""               # Abbas picks the channel name at G0.6
+autonomy_level: 0              # only Abbas edits this (H1, §17)
+active_look: null              # looks/selfhelp-v<n>.yaml once Abbas approves a look (P0.8)
+playbook: identities/selfhelp.playbook.md
+formats: { C: 1.0 }            # Phase 2: { C: 0.6, A: 0.2, B: 0.2 }
+cadence: { posts_per_week: 5, max_per_channel_per_day: 1, min_gap_hours: 3 }  # counts renders; each render goes to every channel of the identity
+exploration_share: 0.2
+real_you_share_min: 0.0        # 0.5 from Phase 2
+film_breakdown_share_max: 0.0  # 0.2 from Phase 2
+channels:
+  - platform: youtube
+    postiz_integration_id: ""  # from `postiz integrations:list` after G0.7
+    ai_disclosure: required
+cta: { kind: follow }          # venture links from Phase 3
+# Deterministic QA screens (proposal; Abbas confirms or edits). Whole words, any case. They
+# are a floor: the qa-reviewer judges meaning (FR-QA-7).
+qa:
+  banned_terms:                # FR-QA-6, from the playbook's banned list
+    medical: [cure, cures, diagnosis, diagnose, medication, prescription, symptoms, disease, clinical]
+    mental_health: [depression, anxiety disorder, adhd, ptsd, therapy, therapist, bipolar, mental illness]
+    diet: [diet, dieting, supplement, supplements, calories, fasting, keto, weight loss, vitamins]
+    money: [invest, investing, investment, stocks, crypto, passive income, get rich, make money, side hustle]
+    legal: [legal advice, lawsuit, lawyer, sue]
+    politics: [election, politician, politics, left-wing, right-wing, vote]
+    religion: [god, prayer, religion, church, mosque, temple]
+    tragedy: [suicide, tragedy, killed, cancer]
+  never_terms: []              # FR-QA-8 extras; the Fact Sheet's own never list is read from it at run time
+  self_reference_terms:        # a sentence with one of these is about Abbas and must match the Fact Sheet
+    [Abbas, chef, engineer, developer, programmer, founder]
+voice_id: ""                   # ElevenLabs voice id of Abbas's clone, after G0.4
+avatar_id: ""                  # HeyGen avatar id, after G0.5

@@ -1,0 +1,19 @@
+# Every footage, stock and music source the engine may use (SRD §8, FR-SRC-1..3).
+# Only Abbas adds sources; no code path writes this file (FR-SRC-3).
+# Validation (non-empty rights_type and rights_proof) arrives with slice P0.2.
+#
+# rights_type is one of: own, ai_generated, stock, partner_written, cc_by,
+#                        public_domain, film_reference
+#
+# Example (not active):
+#   - id: own-pictures
+#     kind: folder              # folder | drive | channel | library
+#     path: C:\Users\me\Pictures\Footage
+#     rights_type: own
+#     rights_proof: "Filmed by Abbas"
+#   - id: pexels
+#     kind: library
+#     rights_type: stock
+#     rights_proof: "Pexels licence"
+#     licence_url: https://www.pexels.com/license/
+sources: []
