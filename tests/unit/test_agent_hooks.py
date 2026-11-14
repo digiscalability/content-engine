@@ -35,6 +35,9 @@ def ctx(tmp_path, repo_root):
     context = ToolContext(
         conn=conn, config=config, config_dir=repo_root / "config", today=TODAY, run_id="run-1"
     )
+    # H3's disk preflight must not read the host's drive: a CI runner's C: has about 26 GB,
+    # under the 40 GB stop line. The low-disk test sets its own value.
+    context.disk_free = lambda path: 200 * 1024**3
     start_run(conn, "run-1", "ce daily --dry-run")
     return context
 
