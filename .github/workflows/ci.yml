@@ -22,10 +22,18 @@ jobs:
     env:
       CE_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"
+    # Runners check out on D: but keep temp folders on C:, and guard H2 reads only the repo's
+    # own drive. The job runs from a copy on C:, as the engine does on the build machine.
+    defaults:
+      run:
+        working-directory: C:\ce
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Copy to the system drive
+        working-directory: ${{ github.workspace }}
+        run: Copy-Item -Recurse -Force -Path $env:GITHUB_WORKSPACE -Destination C:\ce
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.11"

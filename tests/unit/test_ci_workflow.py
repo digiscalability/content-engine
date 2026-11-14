@@ -63,6 +63,19 @@ def test_each_step_runs_one_command(steps):
         assert len(lines) <= 1, step
 
 
+def test_ci_runs_from_the_system_drive(workflow, steps):
+    """Runners check out on D: while temp folders are on C:, and guard H2 reads only the
+    repo's own drive, so the job copies the checkout to C: and runs there, as on the build
+    machine (ADR 0024)."""
+    (job,) = workflow["jobs"].values()
+    workdir = job["defaults"]["run"]["working-directory"]
+    assert workdir.upper().startswith("C:\\")
+    copy = next(step for step in steps if workdir in step.get("run", ""))
+    assert copy["working-directory"] == "${{ github.workspace }}"
+    after = steps[steps.index(copy) + 1 :]
+    assert all("working-directory" not in step for step in after if "run" in step)
+
+
 def test_ci_excludes_every_registered_marker(steps):
     pyproject = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
     registered = {m.split(":")[0] for m in pyproject["tool"]["pytest"]["ini_options"]["markers"]}
