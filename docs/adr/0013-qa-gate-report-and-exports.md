@@ -1,6 +1,6 @@
 # ADR 0013: QA gate, render report and hand-polish exports
 
-- Status: accepted, 2026-11-13 (slice P0.7.3); decision 2 amended by ADR 0014 (the never list is read from the Fact Sheet)
+- Status: accepted, 2026-11-13 (slice P0.7.3); decision 2 amended by ADR 0014 (the never list is read from the Fact Sheet); decision 4 amended by ADR 0018 (each check runs once on its own)
 - Requirements: SRD §6.7 (FR-QA-1, 5, 6, 7, 8), FR-PRD-7, FR-PUB-3, §7.4, §8.1–§8.3, §10, C7, D9, D12, NFR-9
 
 ## Context

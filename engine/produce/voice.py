@@ -148,6 +148,7 @@ class ElevenLabsVoice:
 class FakeVoice:
     """Stands in for ElevenLabs in dry runs and tests: silent WAVs, an in-memory balance."""
 
+    silent = True  # by design: the spec check does not fail its silent mix (FR-QA-4)
     limit: int = 131_000
     used: int = 0
     calls: list[VoiceRequest] = field(default_factory=list)

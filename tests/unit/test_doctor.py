@@ -1,5 +1,6 @@
 """`ce doctor` checks (SRD §5.2, NFR-5, NFR-8). Every probe is a fake."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -154,3 +155,28 @@ def test_config_problems_fail():
     assert check.status == "fail"
     assert check.detail == "2 problems; first: sources.yaml: sources.0.rights_proof: Field required"
     assert exit_code(checks) == 1
+
+
+def test_a_missing_embedding_model_is_a_warning():
+    probes = fake_probes()
+    missing = replace(probes, model_cached=lambda key: False)
+    check = next(c for c in checks_for(missing) if c.group == "models")
+    assert check.status == "warn" and "ce models fetch" in check.detail
+    cached = next(c for c in checks_for(probes) if c.group == "models")
+    assert cached.status == "ok"
+
+
+def test_each_pinned_model_is_checked():
+    probes = replace(fake_probes(), model_cached=lambda key: key != "clip")
+    checks = [c for c in checks_for(probes) if c.group == "models"]
+    names = ["bge-small-en-v1.5", "clip-vit-base-patch32", "face_detection_yunet"]
+    assert [c.name for c in checks] == names
+    assert [c.status for c in checks] == ["ok", "warn", "ok"]
+    assert "ce models fetch clip" in checks[1].detail and "608 MB" in checks[1].detail
+
+
+def test_sqlite_vec_is_checked():
+    assert find(checks_for(fake_probes()), "sqlite-vec").status == "ok"
+    broken = replace(fake_probes(), vec_version=lambda: None)
+    check = find(checks_for(broken), "sqlite-vec")
+    assert check.status == "fail" and "library" in check.detail

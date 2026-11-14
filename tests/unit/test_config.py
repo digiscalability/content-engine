@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from engine.config import ConfigError, load_config
+from engine.config.models import SourcesFile
 
 VALID_SOURCES = r"""
 sources:
@@ -19,9 +20,11 @@ sources:
     rights_proof: Filmed by Abbas
   - id: pexels
     kind: library
+    url: https://api.pexels.com/v1/videos/
     rights_type: stock
     rights_proof: Pexels licence
     licence_url: https://www.pexels.com/license/
+    attribution: Pexels
   - id: films-a
     kind: drive
     volume_serial: 1A2B-3C4D
@@ -76,7 +79,7 @@ def test_repo_config_loads(repo_root):
     config = load_config(repo_root / "config")
     assert config.engine.agents.orchestrator.model == "claude-opus-5-5"
     assert config.engine.disk.stop_free_gb == 40
-    assert config.sources == []
+    assert [s.id for s in config.sources] == ["own-videos"]  # G0.9c, named by Abbas
     assert set(config.identities) == {"selfhelp"}
     assert config.identities["selfhelp"].autonomy_level == 0
 
@@ -133,6 +136,7 @@ def test_unknown_rights_type_fails(cfg):
         ),
         ({"rights_type": "film_reference"}, "film_reference"),
         ({"kind": "library", "rights_type": "stock"}, "licence_url"),
+        ({"kind": "library", "rights_type": "stock", "licence_url": "https://x"}, "attribution"),
         ({"id": "engine"}, "reserved"),
     ],
 )
@@ -257,3 +261,48 @@ def test_qa_config_names_the_fact_sheet_and_the_term_lists(repo_root):
     assert categories <= set(qa.banned_terms)  # the playbook's banned list (FR-QA-6)
     assert qa.never_terms == []  # FR-QA-8's list comes from the Fact Sheet at run time
     assert "Abbas" in qa.self_reference_terms
+
+
+def test_a_playbook_the_planner_cannot_read_is_a_problem(cfg):
+    path = cfg / "identities" / "selfhelp.playbook.md"
+    text = path.read_text(encoding="utf-8").replace("#### Focus and deep work", "#### Cooking")
+    path.write_text(text, encoding="utf-8")
+    found = problems(cfg)
+    assert any(
+        p.startswith("identities/selfhelp.yaml: playbook:") and "Cooking" in p for p in found
+    )
+
+
+def test_a_library_source_needs_a_path_or_a_url(cfg):
+    write(cfg, "sources.yaml", one_source(kind="library", path=None, rights_type="stock",
+                                          licence_url="https://x"))  # fmt: skip
+    assert any("library sources need a path" in p for p in problems(cfg)), problems(cfg)
+
+
+def test_the_stock_source_must_be_a_library_api(cfg):
+    edit_yaml(cfg, "engine.yaml", "stock.source", "own-videos")
+    found = problems(cfg)
+    assert any(p.startswith("engine.yaml: stock.source") for p in found), found
+
+
+def ready_sources(repo_root: Path) -> list:
+    """The commented-out entries under READY FOR P0.6b.3 in sources.yaml, uncommented."""
+    text = (repo_root / "config" / "sources.yaml").read_text(encoding="utf-8")
+    block = text.split("READY FOR P0.6b.3", 1)[1].splitlines()[1:]
+    entries = [line for line in block if line.startswith(("  #   ", "  # - "))]
+    lines = ["sources:", *(line.replace("  # ", "  ", 1) for line in entries)]
+    return SourcesFile.model_validate(yaml.safe_load("\n".join(lines))).sources
+
+
+def test_the_stock_and_music_sources_are_ready_but_off(repo_root):
+    """ADR 0023: written out for P0.6b.3, valid once uncommented, off until Abbas says yes."""
+    by_id = {s.id: s for s in ready_sources(repo_root)}
+    pexels, music = by_id["pexels"], by_id["youtube-audio-library"]
+    assert (pexels.kind, pexels.rights_type, pexels.path) == ("library", "stock", None)
+    assert pexels.url.startswith("https://api.pexels.com/")
+    assert pexels.licence_url == "https://www.pexels.com/license/"
+    assert (music.kind, music.rights_type) == ("library", "stock")
+    assert music.path == "media/library/music"
+    config = load_config(repo_root / "config")
+    assert config.engine.stock.source == "pexels" and config.engine.stock.daily_cap >= 1
+    assert "pexels" not in {s.id for s in config.sources}

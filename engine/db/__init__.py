@@ -13,6 +13,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+import sqlite_vec
+
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 _FILE = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
 
@@ -44,8 +46,12 @@ def load_migrations(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
-    """A connection with foreign keys on, WAL journaling and explicit transactions."""
+    """A connection with foreign keys on, WAL journaling, explicit transactions and the
+    sqlite-vec extension (the library's vector tables, migration 0005)."""
     conn = sqlite3.connect(path, isolation_level=None)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

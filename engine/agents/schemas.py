@@ -97,15 +97,29 @@ class MomentScoresSubmission(Model):
     scores: list[MomentScore] = Field(min_length=1)
 
 
+# GR-3: what a post adds of its own (original voice or commentary, a new script or structure,
+# new visuals, educational framing); a pass needs at least two
+Addition = Literal["voiceover", "script", "visuals", "education"]
+
+
 class QAReviewSubmission(Model):
     render_id: Annotated[int, Field(ge=1)]
     verdict: Literal["pass", "hold", "fail"]
+    adds: list[Addition]  # the reviewer's GR-3 checklist, filled for every verdict
+    fits_identity: bool  # the playbook's angle, pillars and tone
     reasons: list[str] = []
 
     @model_validator(mode="after")
-    def _reasons(self) -> QAReviewSubmission:
+    def _checklist(self) -> QAReviewSubmission:
         if self.verdict != "pass" and not [r for r in self.reasons if r.strip()]:
             raise ValueError("a hold or fail needs reasons (FR-QA-7)")
+        if self.verdict == "pass" and len(set(self.adds)) < 2:
+            raise ValueError(
+                "a pass needs at least two of voiceover, script, visuals, education (GR-3); "
+                "otherwise hold or fail with reasons"
+            )
+        if self.verdict == "pass" and not self.fits_identity:
+            raise ValueError("a pass needs fits_identity: hold or fail with reasons (FR-QA-7)")
         return self
 
 

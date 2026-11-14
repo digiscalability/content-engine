@@ -7,7 +7,8 @@ through. Matchers see only tool names; the callbacks read `tool_input`.
 
 H1 publish guard   schedule_post: L0, kill flag, not qa_passed, or any QA flag -> deny
 H2 path guard      Read: outside config/, engine/prompts/, media/work/, or a secret name
-H3 budget guard    voice: engine cap (D10) / account floor (C16); render: daily cap (GR-6)
+H3 budget guard    voice: engine cap (D10) / account floor (C16); avatar: HeyGen cap (NFR-4);
+                   render: daily cap (GR-6) and disk stop line (NFR-5)
 H4 rights guard    submit_edit_plan: tiers, people, licences, film limits (§8.1-§8.3)
 H5 audit           every call -> one `tool_calls` row (never denies)
 
@@ -30,8 +31,11 @@ from typing import Any
 from claude_agent_sdk import HookMatcher
 from pydantic import ValidationError
 
+from engine.agents.actions import AvatarInput, voice_file
 from engine.agents.schemas import EditPlanSubmission, ScriptSubmission
 from engine.agents.tools import ToolContext, call_tool, rights_violations
+from engine.ops.budget import avatar_credits, disk_preflight, heygen_preflight
+from engine.produce.ffmpeg import wav_duration
 from engine.produce.voice import engine_characters
 from engine.settings import REPO_ROOT
 
@@ -162,8 +166,19 @@ def h3_budget(ctx: ToolContext, tool_name: str, tool_input: dict) -> str | None:
         cap = identity.cadence.max_per_channel_per_day
         if today >= cap:
             return f"{identity.id} already has {today} render(s) today; cap is {cap} a day (GR-6)"
-        return None
-    return None  # request_avatar: HeyGen credit caps arrive with the budget ledger (P1.4)
+        return disk_preflight(ctx.disk_free(ctx.media_root), ctx.config.engine.disk.stop_free_gb)
+    if tool_name == f"{ENGINE}request_avatar":
+        try:  # read the input exactly as the tool will, or the guard and tool could differ
+            args = AvatarInput.model_validate(tool_input)
+        except ValidationError as exc:
+            return f"unreadable avatar request: {exc.errors()[0]['msg']}"
+        wav = voice_file(ctx, args.script_id)
+        if not wav.is_file():
+            return f"script {args.script_id} has no voice yet; call synthesize_voice first"
+        heygen = ctx.config.engine.budgets.heygen
+        credits = avatar_credits(wav_duration(wav), heygen.credits_per_minute)
+        return heygen_preflight(ctx.conn, ctx.config, ctx.month, credits)
+    return None
 
 
 # H4 ----------------------------------------------------------------------------------------

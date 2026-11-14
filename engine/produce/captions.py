@@ -42,7 +42,7 @@ class CaptionStyle:
     font_family: str = "Inter"
     font_weight: int = 900
     font_size: int = 92  # the largest size; long groups shrink to fit max_width
-    max_width: int = 900  # portrait title-safe width
+    max_width: int = 740  # inside every platform's safe zone (ADR 0018)
     bottom: int = 650  # px from the bottom: clear of the platform UI, under the face
     ink: str = "#ffffff"
     accent: str = "#ffd23f"  # the word being spoken
@@ -170,7 +170,8 @@ def render_captions(
     output: Path,
     renderer: OverlayRenderer,
     style: CaptionStyle = CaptionStyle(),
+    max_words: int = 4,
 ) -> Path:
     """Group the words, write the project and render it to an alpha overlay at `output`."""
-    write_caption_project(group_words(words), duration, project_dir, style)
+    write_caption_project(group_words(words, max_words=max_words), duration, project_dir, style)
     return renderer.render(project_dir, output)

@@ -45,12 +45,57 @@ class Probes:
     which: Callable[[str], str | None]
     run: Callable[[list[str]], tuple[int, str]]
     disk_free_bytes: Callable[[Path], int]
+    model_cached: Callable[[str], bool] = lambda key: True
+    vec_version: Callable[[], str | None] = lambda: "v0.1.9"
 
     @classmethod
     def real(cls) -> Probes:
         return cls(
-            which=shutil.which, run=_run, disk_free_bytes=lambda p: shutil.disk_usage(p).free
+            which=shutil.which,
+            run=_run,
+            disk_free_bytes=lambda p: shutil.disk_usage(p).free,
+            model_cached=_model_cached,
+            vec_version=_vec_version,
         )
+
+
+def _model_cached(key: str) -> bool:
+    from engine.library.models import PINNED
+
+    return PINNED[key].cached()
+
+
+def _vec_version() -> str | None:
+    import sqlite3
+
+    from engine.db import connect
+
+    try:
+        return str(connect(":memory:").execute("SELECT vec_version()").fetchone()[0])
+    except (sqlite3.Error, OSError, AttributeError):
+        return None
+
+
+def _model_checks(probes: Probes) -> list[Check]:
+    from engine.library.models import PINNED
+
+    checks = []
+    for key, model in PINNED.items():
+        if probes.model_cached(key):
+            checks.append(Check("models", model.short_name, "ok", "cached"))
+        else:
+            detail = (f"missing: run `uv run ce models fetch {key}` ({model.size_mb:g} MB; "
+                      f"{model.purpose})")  # fmt: skip
+            checks.append(Check("models", model.short_name, "warn", detail))
+    return checks
+
+
+def _vec_check(probes: Probes) -> Check:
+    version = probes.vec_version()
+    if version is None:
+        detail = "the sqlite-vec extension does not load; the library's vector tables need it"
+        return Check("library", "sqlite-vec", "fail", detail)
+    return Check("library", "sqlite-vec", "ok", version)
 
 
 @dataclass(frozen=True)
@@ -161,6 +206,8 @@ def run_checks(
     checks += [_tool_check(name, probes, required=False)[0] for name in OPTIONAL_TOOLS]
     checks += _gpu_checks(probes)
     checks.append(_disk_check(probes, config, root))
+    checks += _model_checks(probes)
+    checks.append(_vec_check(probes))
     checks.append(_config_check(config_problems))
     if env_file_exists:
         checks.append(Check("env", ".env file", "ok", "present"))

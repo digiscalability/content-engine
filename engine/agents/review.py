@@ -1,7 +1,7 @@
-"""The QA gate as tools (SRD §6.7): `run_qa_checks` (FR-QA-1, 5, 6, 8), the qa-reviewer's
+"""The QA gate as tools (SRD §6.7): `run_qa_checks` (FR-QA-1, 3, 4, 5, 6, 8), the qa-reviewer's
 `get_render_report` and `submit_qa_review` (FR-QA-7), and the copy check `create_draft`
-runs on titles, captions and hashtags (FR-QA-8). FR-QA-2, 3 and 4 arrive with their
-slices. ADR 0013.
+runs on titles, captions and hashtags (FR-QA-8). Self-dedupe (FR-QA-3) and the spec check
+(FR-QA-4) joined in P1.3; FR-QA-2 arrives in P2.3. ADRs 0013, 0018.
 
 The deterministic checks run once per render and are stored in `qa_results`. A fail moves
 the posts to `qa_failed`, a hold to `qa_held`; only a render whose checks all passed is
@@ -19,16 +19,32 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from engine.agents.context import ToolContext, ToolError, require_brief, require_identity
+from engine.agents.context import (
+    ToolContext,
+    ToolError,
+    require_brief,
+    require_identity,
+    require_providers,
+)
 from engine.agents.schemas import QAReviewSubmission, ScriptSubmission
 from engine.agents.state import advance_posts
 from engine.config.models import IdentityConfig
+from engine.library.embeddings import to_blob
 from engine.produce.editplan import EditPlan
 from engine.qa import CheckResult, verdict
+from engine.qa.dedupe import recent_scripts, self_dedupe_check
 from engine.qa.rights import disclosure_check, rights_check
+from engine.qa.spec import SpecRules, spec_check
 from engine.qa.text import FactSheet, Text, banned_terms_check, claims_check, post_texts
 
-DETERMINISTIC = ("rights", "disclosure", "banned_topics", "claims_about_abbas")
+DETERMINISTIC = (
+    "rights",
+    "disclosure",
+    "banned_topics",
+    "claims_about_abbas",
+    "self_dedupe",
+    "spec",
+)
 REVIEW = "qa_review"
 STATE_FOR = {"fail": "qa_failed", "hold": "qa_held", "pass": "qa_passed"}
 
@@ -144,25 +160,63 @@ def require_qa_passed(ctx: ToolContext, render_id: int) -> None:
 # run_qa_checks ------------------------------------------------------------------------------
 
 
+def _self_dedupe(ctx: ToolContext, view: RenderView, render_id: int) -> CheckResult:
+    """Embed the voiced script, store it on the render, compare it (FR-QA-3)."""
+    limits = ctx.config.engine.qa.self_dedupe
+    spoken = " ".join(beat["text"] for beat in view.beats)
+    (vector,) = require_providers(ctx).embedder.embed([spoken])
+    ctx.conn.execute(
+        "UPDATE renders SET script_embedding = ? WHERE id = ?", (to_blob(vector), render_id)
+    )
+    earlier = recent_scripts(ctx.conn, view.identity.id, view.brief["id"], limits.lookback_posts)
+    return self_dedupe_check(vector, earlier, limits.script_cosine_max)
+
+
+def _spec(ctx: ToolContext, view: RenderView) -> CheckResult:
+    """FR-QA-4 on what the render report measured."""
+    report = json.loads(view.render["report"]) if view.render["report"] else None
+    return spec_check(
+        report,
+        SpecRules.from_engine(ctx.config.engine, view.brief["format"]),
+        [post["platform"] for post in view.posts],
+        speech=bool(view.plan.audio.voice),
+        captions=view.plan.captions is not None,
+        silent_voice=getattr(require_providers(ctx).voice, "silent", False),
+    )
+
+
+def _run_check(ctx: ToolContext, view: RenderView, render_id: int, name: str) -> list:
+    """The check `name`; the two text checks run together, under `banned_topics`."""
+    if name == "rights":
+        return [rights_check(ctx.conn, view.plan, view.brief["format"], ctx.today)]
+    if name == "disclosure":
+        return [disclosure_check(ctx.conn, view.plan, view.posts)]
+    if name == "self_dedupe":
+        return [_self_dedupe(ctx, view, render_id)]
+    if name == "spec":
+        return [_spec(ctx, view)]
+    if name in ("banned_topics", "claims_about_abbas"):
+        return text_checks(ctx, view.identity, post_texts(view.beats, view.words))
+    raise ValueError(f"unknown check {name}")
+
+
 def run_qa_checks(ctx: ToolContext, args: RenderIdInput) -> dict:
     view = render_view(ctx, args.render_id)
     stored = stored_checks(ctx, args.render_id)
-    if all(name in stored for name in DETERMINISTIC):
-        results = [stored[name] for name in DETERMINISTIC]  # deterministic: run once
-    else:
-        texts = post_texts(view.beats, view.words)
-        results = [
-            rights_check(ctx.conn, view.plan, view.brief["format"], ctx.today),
-            disclosure_check(ctx.conn, view.plan, view.posts),
-            *text_checks(ctx, view.identity, texts),
-        ]
-        for result in results:
-            ctx.conn.execute(
-                "INSERT INTO qa_results (render_id, check_name, result, details) "
-                "VALUES (?, ?, ?, ?)",
-                (args.render_id, result.name, result.result,
-                 json.dumps({"reasons": result.reasons})),
-            )  # fmt: skip
+    fresh: dict[str, CheckResult] = {}
+    for name in DETERMINISTIC:  # each runs once per render; older renders get only new ones
+        if name not in stored and name not in fresh:
+            for result in _run_check(ctx, view, args.render_id, name):
+                if result.name not in stored:
+                    fresh[result.name] = result
+    for result in fresh.values():
+        ctx.conn.execute(
+            "INSERT INTO qa_results (render_id, check_name, result, details) "
+            "VALUES (?, ?, ?, ?)",
+            (args.render_id, result.name, result.result,
+             json.dumps({"reasons": result.reasons})),
+        )  # fmt: skip
+    results = [stored.get(name) or fresh[name] for name in DETERMINISTIC]
     worst = verdict("qa", [r.name for r in results if r.result == "fail"],
                     [r.name for r in results if r.result == "hold"])  # fmt: skip
     if worst.result != "pass":
@@ -184,7 +238,10 @@ def get_render_report(ctx: ToolContext, args: RenderIdInput) -> dict:
         "render_id": args.render_id,
         "identity": view.identity.id,
         "format": view.brief["format"],
-        "brief": {k: view.brief[k] for k in ("topic", "angle", "hook", "cta")},
+        "brief": {
+            k: view.brief[k]
+            for k in ("topic", "angle", "hook", "cta", "difference_note", "exploration")
+        },
         "script": view.beats,
         "captions": " ".join(view.words),
         "report": report,
@@ -214,7 +271,18 @@ def submit_qa_review(ctx: ToolContext, review: QAReviewSubmission) -> dict:
         raise ToolError(f"render {review.render_id} did not pass {', '.join(unpassed)}")
     cur = ctx.conn.execute(
         "INSERT INTO qa_results (render_id, check_name, result, details) VALUES (?, ?, ?, ?)",
-        (review.render_id, REVIEW, review.verdict, json.dumps({"reasons": review.reasons})),
+        (
+            review.render_id,
+            REVIEW,
+            review.verdict,
+            json.dumps(
+                {
+                    "reasons": review.reasons,
+                    "adds": review.adds,
+                    "fits_identity": review.fits_identity,
+                }
+            ),
+        ),  # fmt: skip
     )
     advance_posts(ctx.conn, view.brief["id"], STATE_FOR[review.verdict], of_render=review.render_id)
     return {"qa_result_id": cur.lastrowid, "state": STATE_FOR[review.verdict]}

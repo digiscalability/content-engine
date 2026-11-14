@@ -208,6 +208,62 @@ def test_h3_allows_the_first_render_of_the_day(ctx):
     assert hooks.h3_budget(ctx, "mcp__engine__render_post", {"edit_plan_id": plan_id}) is None
 
 
+def voiced(ctx, seconds: float) -> int:
+    """A script with its voice WAV where synthesize_voice leaves it."""
+    from engine.produce.voice import silent_wav_bytes
+
+    script_id = script(ctx, 800)
+    wav = ctx.work_dir / "voice" / f"script-{script_id}.wav"
+    wav.parent.mkdir(parents=True, exist_ok=True)
+    wav.write_bytes(silent_wav_bytes(seconds))
+    return script_id
+
+
+def test_h3_allows_an_avatar_inside_the_heygen_cap(ctx):
+    script_id = voiced(ctx, 45)
+    args = {"brief_id": 1, "script_id": script_id}
+    assert hooks.h3_budget(ctx, "mcp__engine__request_avatar", args) is None
+
+
+def test_h3_denies_an_avatar_past_the_heygen_cap(ctx):
+    cap = ctx.config.engine.budgets.heygen.monthly_credit_cap
+    ctx.conn.execute(
+        "INSERT INTO budget_ledger (vendor, month, units, charge_key) VALUES ('heygen', ?, ?, 'x')",
+        (ctx.month, cap - 0.1),
+    )
+    args = {"brief_id": 1, "script_id": voiced(ctx, 45)}
+    assert "HeyGen" in hooks.h3_budget(ctx, "mcp__engine__request_avatar", args)
+
+
+def test_h3_reads_the_avatar_input_as_the_tool_does(ctx):
+    cap = ctx.config.engine.budgets.heygen.monthly_credit_cap
+    ctx.conn.execute(
+        "INSERT INTO budget_ledger (vendor, month, units, charge_key) VALUES ('heygen', ?, ?, 'x')",
+        (ctx.month, cap - 0.1),
+    )
+    script_id = voiced(ctx, 45)
+    as_float = {"brief_id": 1, "script_id": float(script_id)}  # the tool coerces 2.0 to 2
+    assert "HeyGen" in hooks.h3_budget(ctx, "mcp__engine__request_avatar", as_float)
+
+
+def test_h3_denies_an_avatar_request_it_cannot_read(ctx):
+    for bad in (
+        {"brief_id": 1, "script_id": "two"},
+        {"brief_id": 1},
+        {"brief_id": 1, "script_id": 99},
+    ):
+        assert hooks.h3_budget(ctx, "mcp__engine__request_avatar", bad) is not None
+
+
+def test_h3_denies_a_render_when_the_disk_is_nearly_full(ctx):
+    brief_id = call_tool(ctx, "submit_brief", BRIEF)["brief_id"]
+    plan_id = call_tool(ctx, "submit_edit_plan", plan_input(brief_id, own_asset(ctx)))[
+        "edit_plan_id"
+    ]
+    ctx.disk_free = lambda path: 1024**3  # 1 GB
+    assert "NFR-5" in hooks.h3_budget(ctx, "mcp__engine__render_post", {"edit_plan_id": plan_id})
+
+
 # H4 rights guard --------------------------------------------------------------------------
 
 

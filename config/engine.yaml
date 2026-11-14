@@ -20,6 +20,9 @@ budgets:
   elevenlabs:
     monthly_char_cap: 78600      # D10: the engine's 60% of 131,000
     account_floor_chars: 20000   # C16: stop voice work below this live balance
+  heygen:                        # NFR-4; placeholders until G0.5 shows the plan (ADR 0019)
+    monthly_credit_cap: 30       # about 40 shorts of 45 s
+    credits_per_minute: 1.0      # credits estimated per minute of avatar video, either route
 
 # §5.7 layout, relative to the repo root unless absolute.
 paths:
@@ -34,6 +37,7 @@ paths:
   references_inbox: references/inbox
   reports: reports
   logs: "%LOCALAPPDATA%/content-engine/logs"   # §2.3: <job>-<yyyy-MM-dd>.log
+  gpu_lock: "%LOCALAPPDATA%/content-engine/gpu.lock"  # §13: one GPU job at a time
 
 # §13, Australia/Melbourne. Registered as Task Scheduler jobs only after Abbas's OK.
 schedule:
@@ -53,11 +57,30 @@ retention:
   raw_purge_days_after_last_use: 14
   renders_keep_days_after_publish: 90
 
+# FR-ING-5, ADR 0023: Pexels clips are fetched overnight (`ce stock fetch`) only for beat
+# queries a scriptwriter made for a brief whose best match scored under thin_below (CLIP
+# cosine). Capped per local day; each clip keeps its licence record. Stock is off while the
+# `pexels` source in sources.yaml is commented out (until P0.6b.3).
+stock:
+  source: pexels
+  daily_cap: 10        # clips a day
+  per_request: 2       # clips per beat query
+  max_clip_s: 30
+  thin_below: 0.23     # real CLIP on the drawn fixtures: matches 0.26-0.31, misses 0.14-0.20 (P0.6b.2); retune on real footage (P0.6b.3)
+
 # §6.7
 qa:
   cross_identity: { frame_similarity_max: 0.80, script_cosine_max: 0.85, lookback_days: 180 }
   self_dedupe: { script_cosine_max: 0.90, lookback_posts: 50 }
   caption_coverage_min: 0.95
+  loudness_tolerance_lu: 1.0     # FR-QA-4: integrated loudness within the target ± this
+  # FR-QA-4: pixels of the 1080x1920 frame each platform's UI covers; captions and on-screen
+  # text stay inside. Third-party estimates, not platform specs: the upper ends of the
+  # published ranges, the same for all three until checked against the apps (ADR 0018).
+  safe_zones:
+    youtube:   { top: 200, bottom: 370, left: 60, right: 164 }
+    tiktok:    { top: 200, bottom: 370, left: 60, right: 164 }
+    instagram: { top: 200, bottom: 370, left: 60, right: 164 }
   # D9, FR-QA-8: read at run time, never copied into the repo (it holds contact details)
   fact_sheet: 'C:/claudeSessions/SoloBro/02 - Areas/Career/Public Fact Sheet.md'
 

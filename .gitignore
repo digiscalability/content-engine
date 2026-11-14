@@ -19,6 +19,8 @@ data/
 media/
 !docs/media/
 work/
+# generated daily digests (ADR 0016)
+reports/
 *.db
 
 # HyperFrames working state (check reports, history, ad-hoc renders)

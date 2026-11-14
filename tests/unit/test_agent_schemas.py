@@ -58,10 +58,27 @@ def test_script_counts_words_and_duration():
     assert (script.words, script.duration) == (8, 4.5)
 
 
+PASS = {"render_id": 1, "verdict": "pass", "adds": ["script", "visuals"], "fits_identity": True}
+
+
 def test_hold_and_fail_reviews_need_reasons():
-    QAReviewSubmission.model_validate({"render_id": 1, "verdict": "pass"})
+    QAReviewSubmission.model_validate(PASS)
     with pytest.raises(ValidationError, match="reasons"):
-        QAReviewSubmission.model_validate({"render_id": 1, "verdict": "hold"})
+        QAReviewSubmission.model_validate({**PASS, "verdict": "hold"})
+
+
+def test_a_pass_needs_two_additions():
+    with pytest.raises(ValidationError, match="GR-3"):
+        QAReviewSubmission.model_validate({**PASS, "adds": ["script", "script"]})
+    with pytest.raises(ValidationError, match="adds"):
+        QAReviewSubmission.model_validate({k: v for k, v in PASS.items() if k != "adds"})
+
+
+def test_a_pass_needs_the_identity_fit():
+    with pytest.raises(ValidationError, match="fits_identity"):
+        QAReviewSubmission.model_validate({**PASS, "fits_identity": False})
+    hold = {**PASS, "verdict": "hold", "fits_identity": False, "adds": [], "reasons": ["tone"]}
+    assert QAReviewSubmission.model_validate(hold).verdict == "hold"
 
 
 def test_format_lengths_and_tiers_follow_the_srd():

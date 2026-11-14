@@ -10,7 +10,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from engine.config import CONFIG_DIR, Config
+from engine.library.embeddings import Embedder
+from engine.library.search import SearchModels
 from engine.library.transcribe import Transcriber
+from engine.ops.budget import disk_free
+from engine.ops.gpu_lock import DEFAULT_TIMEOUT_S
 from engine.produce.avatar import AvatarProvider
 from engine.produce.overlay import OverlayRenderer
 from engine.produce.process import Runner, run_command
@@ -33,6 +37,7 @@ class Providers:
     publisher: Publisher
     transcriber: Callable[[str], Transcriber]  # given the spoken text; fakes align to it
     overlay: OverlayRenderer
+    embedder: Embedder  # script embeddings for self-dedupe (FR-QA-3)
     render_settings: RenderSettings = field(default_factory=RenderSettings)
     run: Runner = run_command  # ffmpeg and ffprobe
 
@@ -52,11 +57,20 @@ class ToolContext:
     renders: dict[str, int] = field(default_factory=dict)  # renders this run, per identity
     providers: Providers | None = None  # action tools refuse without them
     media_root: Path = REPO_ROOT / "media"
+    look_dirs: list[Path] = field(default_factory=list)  # searched before config/looks
+    gpu_lock: Path | None = None  # None in unit tests: no lock taken
+    gpu_lock_timeout_s: float = DEFAULT_TIMEOUT_S
     now: Callable[[], datetime] = _utcnow
+    disk_free: Callable[[Path], int] = disk_free  # the render preflight's probe (NFR-5)
+    search_models: SearchModels | None = None  # search_library ranks by meaning with them
 
     @property
     def month(self) -> str:
         return self.today.strftime("%Y-%m")
+
+    @property
+    def look_folders(self) -> list[Path]:
+        return [*self.look_dirs, self.config_dir / "looks"]
 
     @property
     def work_dir(self) -> Path:

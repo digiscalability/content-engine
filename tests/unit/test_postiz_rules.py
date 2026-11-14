@@ -6,12 +6,16 @@ from pathlib import Path
 import pytest
 
 from engine.publish.postiz import (
+    MISSING,
+    AnalyticsResult,
     FakePostiz,
     PostizError,
     RemotePost,
+    _remote_from,
     draft_payload,
     draft_post,
     engine_state,
+    parse_analytics,
     tiktok_settings,
     unsupported_settings,
     youtube_settings,
@@ -97,3 +101,25 @@ def test_draft_post_refuses_settings_postiz_would_drop(tmp_path):
     with pytest.raises(PostizError, match="containsSyntheticMedia"):
         draft_post(postiz, "yt-1", "youtube", "Caption", [Path("never-read.mp4")], bad, WHEN)
     assert postiz.uploads == [] and postiz.drafts == {}
+
+
+def test_analytics_take_the_last_point_of_each_label():
+    data = [
+        {"label": "Views", "percentageChange": 0,
+         "data": [{"total": "10", "date": "2026-11-13"}, {"total": "1200", "date": "2026-11-14"}]},
+        {"label": "Likes", "percentageChange": 0, "data": [{"total": "33.0", "date": "x"}]},
+        {"label": "Reach", "percentageChange": 0, "data": [{"total": "n/a", "date": "x"}]},
+        {"label": "Saves", "percentageChange": 0, "data": []},
+    ]  # fmt: skip
+    assert parse_analytics(data) == AnalyticsResult(False, {"views": 1200, "likes": 33})
+
+
+def test_analytics_missing_and_empty():
+    assert parse_analytics({"missing": True}) == AnalyticsResult(True, {})
+    assert parse_analytics([]) == AnalyticsResult(False, {})
+
+
+def test_remote_post_reads_the_release_id():
+    post = _remote_from({"id": "p", "state": "PUBLISHED", "releaseId": "missing",
+                         "integration": {"id": "tt-1"}})  # fmt: skip
+    assert post.release_id == MISSING

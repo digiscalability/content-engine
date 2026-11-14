@@ -1,0 +1,41 @@
+# The pure-module tests and ruff on every push and pull request (ADR 0024). No keys, GPU,
+# models, ffmpeg or network: the golden, gpu, live, model and media markers stay on the build
+# machine. The same file runs in the public mirror.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Windows: the engine is Windows-only (junctions, 8.3 names, volumes, PowerShell wrappers).
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CE_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      # One command a step: PowerShell fails a multi-line step only on its last command.
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Pure-module tests
+        run: uv run pytest -m "not golden and not gpu and not live and not model and not media"

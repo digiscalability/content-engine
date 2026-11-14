@@ -54,6 +54,30 @@ def measure_loudness(path: Path, run: Runner = run_command) -> tuple[float | Non
     return parse_ebur128(result.stderr)
 
 
+BBOX = re.compile(r"x1:(-?\d+) x2:(-?\d+) y1:(-?\d+) y2:(-?\d+)")
+
+
+def parse_bbox(stderr: str) -> list[int] | None:
+    """The union of ffmpeg `bbox` boxes over the frames as [x1, y1, x2, y2]; None when no
+    frame showed anything."""
+    boxes = [tuple(map(int, m.groups())) for m in BBOX.finditer(stderr)]
+    if not boxes:
+        return None
+    return [min(b[0] for b in boxes), min(b[2] for b in boxes),
+            max(b[1] for b in boxes), max(b[3] for b in boxes)]  # fmt: skip
+
+
+def measure_text_box(overlay: Path, run: Runner = run_command) -> list[int] | None:
+    """Where an alpha overlay draws anything, over the whole clip, sampled at 4 fps
+    (FR-QA-4 safe zones)."""
+    argv = ["ffmpeg", "-hide_banner", "-nostats", "-i", str(overlay),
+            "-vf", "fps=4,alphaextract,bbox=min_val=32", "-f", "null", "-"]  # fmt: skip
+    result = run(argv, None)
+    if result.returncode != 0:
+        raise FfmpegError(f"caption box measurement failed on {overlay}: {output_tail(result)}")
+    return parse_bbox(result.stderr)
+
+
 def _seconds(value: float) -> float:
     return round(value, 3)
 
@@ -65,6 +89,7 @@ def build_render_report(
     loudness: tuple[float | None, float | None],
     words: Sequence[Word],
     targets: tuple[float, float],
+    caption_box: list[int] | None = None,
 ) -> dict:
     tiers: dict[str, float] = {}
     people: dict[str, list[int]] = {}
@@ -114,5 +139,6 @@ def build_render_report(
             "words": len(words),
             "groups": len(groups),
             "coverage": round(caption_coverage(words, groups), 4) if words else None,
+            "box": caption_box,  # [x1, y1, x2, y2] drawn, or None
         },
     }

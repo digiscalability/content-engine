@@ -42,6 +42,7 @@ def test_section_5_3_tools_per_agent():
     assert AGENTS["orchestrator"].tools == (
         "get_state",
         "get_playbook",
+        "get_topic_candidates",
         "get_style_profile",
         "get_trends",
         "budget_status",
@@ -53,6 +54,7 @@ def test_section_5_3_tools_per_agent():
     )
     assert AGENTS["scriptwriter"].tools == (
         "get_playbook",
+        "get_topic_candidates",
         "get_style_profile",
         "search_library",
         "submit_brief",
@@ -147,3 +149,19 @@ def test_engine_tools_answer_through_the_sdk_wrapper(ctx):
     assert json.loads(ok["content"][0]["text"])["identities"][0]["id"] == "selfhelp"
     bad = asyncio.run(tools["get_playbook"].handler({"identity": "nobody"}))
     assert bad["is_error"] is True
+
+
+def test_the_run_budget_shrinks_to_what_is_left_of_the_month(ctx, settings):
+    from datetime import date
+
+    from engine.ops.budget import BudgetStop
+
+    ctx.today = date(2026, 11, 14)
+    ctx.conn.execute(
+        "INSERT INTO budget_ledger (vendor, month, units, cost, charge_key) "
+        "VALUES ('anthropic', '2026-11', 58.5, 58.5, 'earlier')"
+    )
+    assert build_options(ctx, settings).max_budget_usd == 1.5
+    ctx.conn.execute("UPDATE budget_ledger SET cost = 60")
+    with pytest.raises(BudgetStop, match="monthly cap"):
+        build_options(ctx, settings)

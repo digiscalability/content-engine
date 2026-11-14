@@ -61,6 +61,35 @@ def test_playbook_has_rules_and_learned_sections(repo_root):
     assert rules < learned
 
 
-def test_sources_start_empty(repo_root):
-    sources = yaml.safe_load((repo_root / "config" / "sources.yaml").read_text(encoding="utf-8"))
-    assert sources == {"sources": []}
+def test_sources_hold_only_what_abbas_named(repo_root):
+    """G0.9c: the folders Abbas named in chat (P0.6b.1, 13 Nov 2026), and no user name."""
+    text = (repo_root / "config" / "sources.yaml").read_text(encoding="utf-8")
+    sources = yaml.safe_load(text)["sources"]
+    assert [(s["id"], s["path"], s["rights_type"]) for s in sources] == [
+        ("own-videos", r"%USERPROFILE%\Videos", "own")
+    ]
+    assert "Users\\" not in text.split("\nsources:", 1)[1]
+
+
+def test_adr_index_lists_every_adr(repo_root):
+    """P1.8: the ADR index is the reader's way in, so no decision is missing from it."""
+    adr = repo_root / "docs" / "adr"
+    index = (adr / "README.md").read_text(encoding="utf-8")
+    linked = set(re.findall(r"\]\((\d{4}-[^)]+\.md)\)", index))
+    files = {p.name for p in adr.glob("[0-9][0-9][0-9][0-9]-*.md")}
+    assert files - linked == set(), "ADRs missing from docs/adr/README.md"
+    assert linked - files == set(), "index links with no ADR file"
+
+
+def test_readme_layout_lists_every_engine_package(repo_root):
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    packages = sorted(p.parent.name for p in (repo_root / "engine").glob("*/__init__.py"))
+    missing = [name for name in packages if f"`engine/{name}/`" not in readme]
+    assert missing == []
+
+
+def test_readme_shows_the_walkthrough_and_ci(repo_root):
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "](docs/media/walkthrough.mp4)" in readme
+    assert "![" in readme and "](docs/media/demo.gif)" in readme
+    assert "actions/workflows/ci.yml/badge.svg" in readme

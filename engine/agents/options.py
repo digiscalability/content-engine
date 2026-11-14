@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 from claude_agent_sdk import ClaudeAgentOptions, SdkMcpTool, create_sdk_mcp_server, tool
 
@@ -26,6 +26,7 @@ from engine.agents.definitions import (
 from engine.agents.hooks import build_hooks
 from engine.agents.schemas import RunReport
 from engine.agents.tools import TOOLS, ToolContext, ToolSpec, call_tool
+from engine.ops.budget import claude_run_budget
 from engine.settings import KEY_SPECS, REPO_ROOT, Settings
 
 AGENT_KEY = "ANTHROPIC_API_KEY"
@@ -65,14 +66,17 @@ def engine_server(ctx: ToolContext):
     return create_sdk_mcp_server(name="engine", tools=sdk_tools(ctx))
 
 
-def build_options(ctx: ToolContext, settings: Settings) -> ClaudeAgentOptions:
+def build_options(
+    ctx: ToolContext, settings: Settings, command: Literal["daily", "weekly"] = "daily"
+) -> ClaudeAgentOptions:
+    """The orchestrator's options; `BudgetStop` when the month's Claude cap is spent."""
     engine = ctx.config.engine
     orchestrator = engine.agents.orchestrator
     return ClaudeAgentOptions(
         model=orchestrator.model,
         effort=orchestrator.effort,
         max_turns=orchestrator.max_turns,
-        max_budget_usd=engine.budgets.claude.max_budget_usd.daily,
+        max_budget_usd=claude_run_budget(ctx.conn, ctx.config, ctx.month, command),
         permission_mode="dontAsk",
         allowed_tools=[*engine_tools(AGENTS["orchestrator"].tools), "Read", "Agent"],
         disallowed_tools=list(BANNED_TOOLS),

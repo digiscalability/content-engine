@@ -15,6 +15,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from engine.config.models import EngineConfig, IdentityConfig, SourceConfig, SourcesFile
+from engine.plan.playbook import PlaybookError, load_playbook
 from engine.settings import REPO_ROOT
 
 CONFIG_DIR = REPO_ROOT / "config"
@@ -88,6 +89,11 @@ def _load_identity(path: Path, config_dir: Path, problems: list[str]) -> Identit
         problems.append(f"{rel}: id: '{identity.id}' must match the file name '{path.stem}'")
     if not (config_dir / identity.playbook).is_file():
         problems.append(f"{rel}: playbook: {identity.playbook} not found")
+    else:
+        try:  # the planner reads it every run (FR-PLN-1, ADR 0017)
+            load_playbook(config_dir / identity.playbook)
+        except PlaybookError as exc:
+            problems.append(f"{rel}: playbook: {identity.playbook}: {exc}")
     if identity.active_look and not (config_dir / identity.active_look).is_file():
         problems.append(f"{rel}: active_look: {identity.active_look} not found")
     return identity
@@ -120,6 +126,14 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
         identity = _load_identity(path, config_dir, problems)
         if identity is not None:
             identities[identity.id] = identity
+    if engine is not None and sources is not None:
+        # No such source means stock is off; a source of another kind is a mistake.
+        stock = next((s for s in sources.sources if s.id == engine.stock.source), None)
+        if stock is not None and (stock.kind != "library" or not stock.url):
+            problems.append(
+                f"{ENGINE_FILE}: stock.source: '{engine.stock.source}' must be a library source "
+                f"with a url in {SOURCES_FILE} (FR-ING-5)"
+            )
     if problems or engine is None or sources is None:
         raise ConfigError(problems)
     return Config(engine=engine, sources=list(sources.sources), identities=identities)

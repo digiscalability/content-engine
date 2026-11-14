@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import dataclass, replace
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from engine.agents import actions, review
 from engine.agents.context import (
@@ -38,10 +38,15 @@ from engine.agents.schemas import (
     allowed_tiers,
 )
 from engine.agents.state import advance_posts, plan_posts
-from engine.config.models import Format
+from engine.config.models import Format, IdentityConfig
+from engine.library.search import search, search_music
+from engine.library.stock_fetch import queue_request
+from engine.ops.budget import budget_lines
+from engine.plan.playbook import Playbook, PlaybookError, load_playbook
+from engine.plan.topics import WINDOW, exploration_due, next_format, topic_candidates
 from engine.produce.voice import engine_characters
 from engine.qa.rights import rights_violations
-from engine.qa.text import FactSheet
+from engine.qa.text import FactSheet, Text, banned_terms_check, claims_check
 
 
 @dataclass(frozen=True)
@@ -72,10 +77,40 @@ class IdentityInput(_Input):
     identity: str
 
 
+class TopicInput(_Input):
+    identity: str
+    limit: int = Field(default=5, ge=1, le=50)
+
+
+Bpm = Annotated[int, Field(ge=30, le=250)]
+
+
 class SearchInput(_Input):
-    query: str = ""
+    query: str = Field(default="", description="What the cutaway should show, in words.")
     format: Format
-    limit: int = 10
+    limit: int = Field(default=10, ge=1, le=50)
+    brief_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="The brief this beat is for. When the best match is weak, the query is "
+        "queued and stock footage for it is fetched overnight (FR-ING-5).",
+    )
+    kind: Literal["footage", "music"] = Field(
+        default="footage",
+        description="footage: cutaway clips; music: tracks from the music pool for the bed.",
+    )
+    tempo_bpm: tuple[Bpm, Bpm] | None = Field(
+        default=None, description="music: the look's tempo range, [min, max] bpm."
+    )
+    energy: Literal["low", "medium", "high"] | None = Field(
+        default=None, description="music: the look's energy."
+    )
+
+    @model_validator(mode="after")
+    def _tempo_range(self) -> SearchInput:
+        if self.tempo_bpm and self.tempo_bpm[0] > self.tempo_bpm[1]:
+            raise ValueError("tempo_bpm is [min, max] with min <= max")
+        return self
 
 
 def _within_format(fmt: str, seconds: float, what: str) -> None:
@@ -84,11 +119,41 @@ def _within_format(fmt: str, seconds: float, what: str) -> None:
         raise ToolError(f"{what} runs {seconds:g} s; format {fmt} must be {low}-{high} s (§4.1)")
 
 
+def _week_start(ctx: ToolContext) -> date:
+    return ctx.today - timedelta(days=ctx.today.weekday())  # Monday
+
+
+def _fact_sheet(ctx: ToolContext) -> FactSheet | None:
+    sheet = ctx.config.engine.qa.fact_sheet
+    return FactSheet.load(Path(sheet)) if sheet else None
+
+
+def _playbook(ctx: ToolContext, identity: IdentityConfig) -> Playbook:
+    try:
+        return load_playbook(ctx.config_dir / identity.playbook)
+    except PlaybookError as exc:
+        raise ToolError(f"{identity.id}: {exc}") from exc
+
+
+def _text_checks(identity: IdentityConfig, facts: FactSheet | None, texts: list[Text]) -> list:
+    """The banned-term and claims checks (FR-QA-6, FR-QA-8) a script must pass, run early
+    on planning text so a bad topic costs nothing."""
+    qa = identity.qa
+    return [
+        banned_terms_check(texts, qa.banned_terms),
+        claims_check(texts, facts, qa.self_reference_terms, qa.never_terms),
+    ]
+
+
+def _topic_view(topic) -> dict:
+    return {"topic": topic.text, "pillar": topic.pillar, "explore": topic.explore}
+
+
 # Read tools ------------------------------------------------------------------------------
 
 
 def get_state(ctx: ToolContext, _: NoInput) -> dict:
-    week_start = ctx.today - timedelta(days=ctx.today.weekday())
+    week_start = _week_start(ctx)
     identities = []
     for row in ctx.conn.execute("SELECT * FROM identities ORDER BY id"):
         config = ctx.config.identities.get(row["id"])
@@ -122,11 +187,67 @@ def get_state(ctx: ToolContext, _: NoInput) -> dict:
 
 def get_playbook(ctx: ToolContext, args: IdentityInput) -> dict:
     identity = require_identity(ctx, args.identity)
-    text = (ctx.config_dir / identity.playbook).read_text(encoding="utf-8")
-    sheet = ctx.config.engine.qa.fact_sheet
-    facts = FactSheet.load(Path(sheet)) if sheet else None
+    book = _playbook(ctx, identity)
+    facts = _fact_sheet(ctx)
     never = [*identity.qa.never_terms, *(facts.never_terms if facts else [])]
-    return {"identity": identity.id, "playbook": text, "never_terms": never}
+    return {
+        "identity": identity.id,
+        "playbook": book.raw,
+        "pillars": book.pillars,
+        "banned": book.banned,
+        "topic_bank": [_topic_view(t) for t in book.topics],
+        "learned": book.learned,
+        "never_terms": never,
+    }
+
+
+def get_topic_candidates(ctx: ToolContext, args: TopicInput) -> dict:
+    """FR-PLN-1, FR-PLN-2: the next post's format, whether it explores, and bank topics."""
+    identity = require_identity(ctx, args.identity)
+    book = _playbook(ctx, identity)
+    facts = _fact_sheet(ctx)
+    usable, skipped = [], []
+    for topic in book.topics:
+        checks = _text_checks(identity, facts, [("topic bank", topic.text)])
+        reasons = [r for c in checks if c.result != "pass" for r in c.reasons]
+        if reasons:
+            skipped.append({"topic": topic.text, "reason": "; ".join(reasons)})
+        else:
+            usable.append(topic)
+    rows = ctx.conn.execute(
+        "SELECT topic, format, exploration, date(created_at) AS day FROM briefs "
+        "WHERE identity_id = ? ORDER BY created_at DESC, id DESC",
+        (identity.id,),
+    ).fetchall()
+    week = [r for r in rows if r["day"] >= _week_start(ctx).isoformat()]
+    explored = sum(r["exploration"] for r in week)
+    explore = exploration_due(identity.exploration_share, len(week), explored)
+    bank = replace(book, topics=usable)
+    history = [r["topic"] for r in rows]
+    offered = topic_candidates(bank, history, explore, args.limit)
+    note = "Copy a candidate's topic into submit_brief as written, and set exploration as given."
+    if explore and not offered:
+        offered = topic_candidates(bank, history, False, args.limit)
+        note += (
+            " No explore topic is left in the bank: explore through a new format or hook "
+            "pattern on one of these topics instead (FR-PLN-2)."
+        )
+    if not offered:
+        note += (
+            f" Every bank topic was used in the last {WINDOW} briefs: pick a new topic within "
+            "a pillar, clear of the banned list, until Abbas adds more."
+        )
+    return {
+        "identity": identity.id,
+        "format": next_format(identity.formats, [r["format"] for r in rows[:WINDOW]]),
+        "exploration": explore,
+        "exploration_share": identity.exploration_share,
+        "briefs_this_week": len(week),
+        "explored_this_week": explored,
+        "candidates": [_topic_view(t) for t in offered],
+        "skipped": skipped,
+        "note": note,
+    }
 
 
 def get_style_profile(ctx: ToolContext, args: IdentityInput) -> dict:
@@ -159,51 +280,36 @@ def get_trends(ctx: ToolContext, args: IdentityInput) -> dict:
 
 def budget_status(ctx: ToolContext, _: NoInput) -> dict:
     budgets = ctx.config.engine.budgets
-    claude = ctx.conn.execute(
-        "SELECT COALESCE(SUM(cost), 0) FROM budget_ledger WHERE vendor = 'anthropic' AND month = ?",
-        (ctx.month,),
-    ).fetchone()[0]
-    heygen = ctx.conn.execute(
-        "SELECT COALESCE(SUM(units), 0) FROM budget_ledger WHERE vendor = 'heygen' AND month = ?",
-        (ctx.month,),
-    ).fetchone()[0]
+    lines = {line.vendor: line for line in budget_lines(ctx.conn, ctx.config, ctx.month)}
     return {
         "month": ctx.month,
-        "claude_usd_month": round(float(claude), 4),
+        "claude_usd_month": round(lines["anthropic"].used, 4),
         "claude_monthly_cap_usd": budgets.claude.monthly_cap_usd,
         "run_budget_usd": budgets.claude.max_budget_usd.daily,
         "elevenlabs_chars_month": engine_characters(ctx.conn, ctx.month),
         "elevenlabs_cap": budgets.elevenlabs.monthly_char_cap,
         "elevenlabs_floor": budgets.elevenlabs.account_floor_chars,
         "elevenlabs_balance": ctx.voice_balance.remaining if ctx.voice_balance else None,
-        "heygen_credits_month": float(heygen),
+        "heygen_credits_month": round(lines["heygen"].used, 3),
+        "heygen_credit_cap": budgets.heygen.monthly_credit_cap,
+        "stops": [line.label for line in lines.values() if line.stopped],  # NFR-4 hard stops
     }
 
 
 def search_library(ctx: ToolContext, args: SearchInput) -> dict:
-    """Rights-clean, people-clean, licence-valid footage for a format (FR-PRD-4, §8.3)."""
-    tiers = allowed_tiers(args.format)
-    like = f"%{args.query}%"
-    rows = ctx.conn.execute(
-        f"""SELECT a.id AS asset_id, a.rights_type, a.duration, a.media_kind,
-                   m.id AS moment_id, m.start_s, m.end_s, m.text, m.hook_score
-            FROM assets a
-            JOIN sources s ON s.id = a.source_id
-            LEFT JOIN moments m ON m.asset_id = a.id
-            WHERE a.rights_type IN ({",".join("?" * len(tiers))})
-              AND a.media_kind = 'video'
-              AND a.people_release IN ('none', 'yes')
-              AND (a.licence_expires_at IS NULL OR a.licence_expires_at >= ?)
-              AND (s.expires_at IS NULL OR s.expires_at >= ?)
-              AND (? = '' OR m.text LIKE ? OR a.path LIKE ?)
-            ORDER BY m.hook_score DESC NULLS LAST, a.id
-            LIMIT ?""",
-        (*tiers, ctx.today.isoformat(), ctx.today.isoformat(), args.query, like, like, args.limit),
-    )
-    return {
-        "results": [dict(r) for r in rows],
-        "note": "text match only; semantic ranking arrives with the embeddings (P0.6b)",
-    }
+    """Rights-clean, people-clean, licence-valid footage for a format, ranked by meaning
+    (FR-PRD-4, FR-UND-3, §8.3). A brief's weak beat query is queued for stock (FR-ING-5)."""
+    if args.brief_id is not None:
+        require_brief(ctx, args.brief_id)
+    if args.kind == "music":
+        return search_music(ctx.conn, allowed_tiers(args.format), args.query, ctx.today,
+                            args.limit, args.tempo_bpm, args.energy)  # fmt: skip
+    result = search(ctx.conn, allowed_tiers(args.format), args.query, ctx.today, args.limit,
+                    ctx.search_models)  # fmt: skip
+    if args.brief_id is not None:
+        result["stock_request"] = queue_request(ctx.conn, ctx.config, args.brief_id,
+                                                args.query, args.format, result)  # fmt: skip
+    return result
 
 
 # Submit tools -----------------------------------------------------------------------------
@@ -217,6 +323,10 @@ def submit_brief(ctx: ToolContext, brief: BriefSubmission) -> dict:
             f"{identity.id} does not use format {brief.format} (its formats: "
             f"{', '.join(identity.formats)})"
         )
+    texts = [(f"brief {f}", getattr(brief, f)) for f in ("topic", "angle", "hook", "cta")]
+    failed = [c for c in _text_checks(identity, _fact_sheet(ctx), texts) if c.result == "fail"]
+    if failed:
+        raise ToolError("; ".join(r for c in failed for r in c.reasons))
     cur = ctx.conn.execute(
         "INSERT INTO briefs (identity_id, format, topic, angle, hook, cta, source_moments, "
         "difference_note, exploration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -307,10 +417,19 @@ TOOLS: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             "get_playbook",
-            "An identity's playbook: Abbas's rules (voice, banned topics, "
-            "disclosure, personal facts) and the learned section.",
+            "An identity's playbook: Abbas's rules (voice, pillars, banned topics, "
+            "disclosure, personal facts, topic bank) and the learned section.",
             IdentityInput,
             get_playbook,
+            "read",
+        ),
+        ToolSpec(
+            "get_topic_candidates",
+            "The next post's plan for an identity: the format furthest below its share, "
+            "whether this post explores (the identity's exploration share of each week), and "
+            "bank topics not used in the last 20 briefs, best first.",
+            TopicInput,
+            get_topic_candidates,
             "read",
         ),
         ToolSpec(
@@ -329,15 +448,17 @@ TOOLS: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             "budget_status",
-            "This month's Claude, ElevenLabs and HeyGen spend against their caps.",
+            "This month's Claude, ElevenLabs and HeyGen spend against their caps, and any "
+            "vendor already at its cap (a hard stop).",
             NoInput,
             budget_status,
             "read",
         ),
         ToolSpec(
             "search_library",
-            "Footage and moments a format may use: rights-clean, no "
-            "unreleased faces, licences valid.",
+            "Footage a format may use (rights-clean, no unreleased faces, licences valid), "
+            "ranked by meaning: `results` are scenes whose picture fits the query (one per "
+            "clip), `spoken` are transcript passages that say it.",
             SearchInput,
             search_library,
             "read",

@@ -16,4 +16,40 @@
 #     rights_type: stock
 #     rights_proof: "Pexels licence"
 #     licence_url: https://www.pexels.com/license/
-sources: []
+#
+# Folder paths may use %VARS%, so no user name sits in the repo. `ce ingest` reads folder
+# sources in place; faces send a clip to `ce status --people` until Abbas marks it (§8.3).
+sources:
+  # G0.9c: named by Abbas in the P0.6b.1 build session, 13 Nov 2026 (his own videos;
+  # subfolders included). First ingested in P0.6b.3.
+  - id: own-videos
+    kind: folder
+    path: '%USERPROFILE%\Videos'
+    rights_type: own
+    rights_proof: "Abbas's own videos; he named this folder for the engine on 13 Nov 2026 (G0.9c)"
+  #
+  # READY FOR P0.6b.3 (ADR 0023): the Phase 0 stock and music sources the SRD names (C14,
+  # FR-ING-5, FR-ING-6). Off until Abbas says yes; to switch one on, remove the "# " that
+  # starts each of its lines. Stock and music stay off while they are commented out.
+  #
+  # Pexels stock for cutaways (SRD 8.1): fetched only for beats a scriptwriter asked for,
+  # capped per day (engine.yaml stock), each clip with its own licence record (photographer,
+  # page). Needs PEXELS_API_KEY (G0.9a). Clips land in media/library/stock/pexels.
+  # - id: pexels
+  #   kind: library
+  #   url: https://api.pexels.com/v1/videos/
+  #   rights_type: stock
+  #   rights_proof: "Pexels licence: free to use and modify, attribution not required; no selling unaltered copies, no implied endorsement, identifiable people not shown in a bad light"
+  #   licence_url: https://www.pexels.com/license/
+  #   attribution: Pexels
+  #
+  # The music starter pool Abbas downloads from YouTube Studio's Audio Library (G0.9b), tracks
+  # marked "Attribution not required". A Creative Commons track needs its own source with its
+  # credit text as attribution.
+  # - id: youtube-audio-library
+  #   kind: library
+  #   path: media/library/music
+  #   rights_type: stock
+  #   rights_proof: "YouTube Audio Library licence: copyright-safe for YouTube videos, attribution not required for these tracks"
+  #   licence_url: https://support.google.com/youtube/answer/3376882
+  #   attribution: ""

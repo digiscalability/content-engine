@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,16 +32,32 @@ from engine.agents.state import advance_posts, fail_posts
 from engine.config.models import Platform
 from engine.library.assets import register_generated
 from engine.library.transcribe import refine_starts
+from engine.ops.budget import avatar_credits, record_avatar
+from engine.ops.gpu_lock import GpuLock
 from engine.produce.avatar import AvatarError, AvatarRequest
 from engine.produce.captions import render_captions, voice_onsets
-from engine.produce.editplan import EditPlan
+from engine.produce.editplan import EditPlan, LookRef
 from engine.produce.exports import ExportMedia, plan_timeline, write_fcpxml, write_otio
 from engine.produce.ffmpeg import probe, wav_duration
 from engine.produce.render_ffmpeg import RenderError, RenderSources, mix_audio, render
-from engine.produce.report import AssetFacts, build_render_report, measure_loudness
+from engine.produce.report import (
+    AssetFacts,
+    build_render_report,
+    measure_loudness,
+    measure_text_box,
+)
 from engine.produce.voice import VoiceError, VoiceRequest, synthesize_batch
 from engine.publish.postiz import PostizError, draft_post, tiktok_settings, youtube_settings
 from engine.qa.text import post_texts
+from engine.style.look import (
+    DEFAULT_LOOK,
+    LookConfig,
+    caption_style,
+    grade_lut,
+    is_neutral,
+    load_look,
+    look_path,
+)
 
 Id = Annotated[int, Field(ge=1)]
 Hashtag = Annotated[str, StringConstraints(pattern=r"^#\w+$")]
@@ -83,7 +100,7 @@ def _script(ctx: ToolContext, script_id: int) -> tuple[sqlite3.Row, ScriptSubmis
     return row, ScriptSubmission.model_validate_json(row["body"])
 
 
-def _voice_file(ctx: ToolContext, script_id: int) -> Path:
+def voice_file(ctx: ToolContext, script_id: int) -> Path:
     return ctx.work_dir / "voice" / f"script-{script_id}.wav"
 
 
@@ -137,7 +154,7 @@ def request_avatar(ctx: ToolContext, args: AvatarInput) -> dict:
     identity = require_identity(ctx, brief["identity_id"])
     if not identity.avatar_id:
         raise ToolError(f"{identity.id} has no avatar_id yet (G0.5: the HeyGen avatar)")
-    audio = _voice_file(ctx, args.script_id)
+    audio = voice_file(ctx, args.script_id)
     if not audio.is_file():
         raise ToolError(f"script {args.script_id} has no voice yet; call synthesize_voice first")
     request = AvatarRequest(args.brief_id, audio, identity.avatar_id, script.spoken_text)
@@ -145,6 +162,10 @@ def request_avatar(ctx: ToolContext, args: AvatarInput) -> dict:
         status = providers.avatar.request(request)
     except AvatarError as exc:
         raise ToolError(str(exc)) from exc
+    if status.state in ("ready", "waiting"):  # accepted: either route spends credits
+        heygen = ctx.config.engine.budgets.heygen
+        credits = avatar_credits(wav_duration(audio), heygen.credits_per_minute)
+        record_avatar(ctx.conn, ctx.month, args.script_id, credits, ctx.run_id)
     if status.state == "ready" and status.video is not None:
         info = probe(status.video, providers.run)
         asset_id = register_generated(
@@ -242,6 +263,15 @@ def _voiced_scripts(ctx: ToolContext, plan: EditPlan, brief_id: int) -> list[int
     return ids
 
 
+def resolve_look(ctx: ToolContext, ref: LookRef) -> tuple[LookConfig, Path | None]:
+    """The plan's look file, or the engine default while none is approved (§9.2)."""
+    for folder in ctx.look_folders:
+        path = look_path(folder, ref.id, ref.version)
+        if path.is_file():
+            return load_look(path), path
+    return DEFAULT_LOOK, None
+
+
 def render_post(ctx: ToolContext, args: RenderInput) -> dict:
     providers = require_providers(ctx)
     row = ctx.conn.execute("SELECT * FROM edit_plans WHERE id = ?", (args.edit_plan_id,)).fetchone()
@@ -258,26 +288,42 @@ def render_post(ctx: ToolContext, args: RenderInput) -> dict:
     if plan.captions and not script_ids:
         raise ToolError(f"brief {brief['id']}: captions need a voiced script in the plan")
     sources = _sources(ctx, plan)
+    look, look_file = resolve_look(ctx, plan.look)
     work = ctx.work_dir / f"render-{args.edit_plan_id}"
     name = f"{brief['identity_id']}-{brief['id']}-{args.edit_plan_id}"
     folder = ctx.renders_dir / name  # the MP4, its report and exports, together (FR-PRD-7)
     output = folder / f"{name}.mp4"
     settings = providers.render_settings
     words = []
+    caption_box = None
+    gpu = (
+        GpuLock(ctx.gpu_lock, job=f"render edit plan {args.edit_plan_id}",
+                timeout_s=ctx.gpu_lock_timeout_s)
+        if ctx.gpu_lock
+        else nullcontext()
+    )  # fmt: skip
     try:
-        mix = mix_audio(plan, sources, work, settings, providers.run)
-        if plan.captions:
-            spoken = " ".join(_script(ctx, i)[1].spoken_text for i in script_ids)
-            heard = providers.transcriber(spoken).transcribe(mix).words
-            words = refine_starts(heard, voice_onsets(plan, sources, providers.run))
-            captions = render_captions(
-                words, plan.duration, work / "captions", work / "captions.mov", providers.overlay
-            )
-            sources = replace(sources, captions=captions)
-        result = render(plan, sources, output, work, settings, providers.run, mix=mix)
-        info = probe(output, providers.run)
-        loudness = measure_loudness(output, providers.run)
-    except (RenderError, RuntimeError) as exc:  # ffmpeg, HyperFrames, silencedetect
+        with gpu:  # NVENC, Whisper and HyperFrames: one GPU job at a time (NFR-6)
+            mix = mix_audio(plan, sources, work, settings, providers.run)
+            if not is_neutral(look.grade):  # the look's grade, as a generated LUT
+                lut = work / "look.cube"
+                lut.write_text(grade_lut(look.grade), encoding="utf-8")
+                sources = replace(sources, lut=lut)
+            if plan.captions:
+                spoken = " ".join(_script(ctx, i)[1].spoken_text for i in script_ids)
+                heard = providers.transcriber(spoken).transcribe(mix).words
+                words = refine_starts(heard, voice_onsets(plan, sources, providers.run))
+                style, max_words = caption_style(look)
+                captions = render_captions(
+                    words, plan.duration, work / "captions", work / "captions.mov",
+                    providers.overlay, style, max_words,
+                )  # fmt: skip
+                sources = replace(sources, captions=captions)
+                caption_box = measure_text_box(captions, providers.run)
+            result = render(plan, sources, output, work, settings, providers.run, mix=mix)
+            info = probe(output, providers.run)
+            loudness = measure_loudness(output, providers.run)
+    except (RenderError, RuntimeError) as exc:  # ffmpeg, HyperFrames, silencedetect, GPU busy
         raise ToolError(f"render of edit plan {args.edit_plan_id} failed: {exc}") from exc
     timings = [{"text": w.text, "start": w.start, "end": w.end} for w in words]
     (folder / "words.json").write_text(json.dumps(timings, indent=1), encoding="utf-8")
@@ -293,9 +339,12 @@ def render_post(ctx: ToolContext, args: RenderInput) -> dict:
         "identity": brief["identity_id"],
         "format": brief["format"],
         "file": output.name,
+        "look": {"id": plan.look.id, "version": plan.look.version, "applied": look.name,
+                 "file": look_file.name if look_file else None},  # fmt: skip
         **build_render_report(
             plan, _facts(ctx, plan), info, loudness, words,
             (float(loudness_target.integrated_lufs), float(loudness_target.true_peak_dbtp)),
+            caption_box,
         ),
     }  # fmt: skip
     exports = _export(ctx, plan, sources, name, folder, settings.fps)

@@ -252,7 +252,9 @@ def test_submit_moment_scores_records_the_scorer(ctx):
 
 def test_submit_qa_review_needs_a_render(ctx):
     result = call_tool(
-        ctx, "submit_qa_review", {"render_id": 5, "verdict": "hold", "reasons": ["x"]}
+        ctx,
+        "submit_qa_review",
+        {"render_id": 5, "verdict": "hold", "reasons": ["x"], "adds": [], "fits_identity": False},
     )
     assert result["ok"] is False and "render 5" in result["errors"][0]
 
@@ -394,3 +396,116 @@ def test_get_playbook_lists_the_never_terms_from_the_fact_sheet(ctx, tmp_path):
     ctx.config = replace(ctx.config, engine=ctx.config.engine.model_copy(update={"qa": qa}))
     result = call_tool(ctx, "get_playbook", {"identity": "selfhelp"})
     assert result["never_terms"] == ["guru"]  # avoid them before voicing, not only at QA
+
+
+# Topic planning (P1.2, FR-PLN-1, FR-PLN-2) ---------------------------------------------------
+
+
+def add_brief(ctx, topic: str, day: str, fmt: str = "C", explore: bool = False) -> None:
+    ctx.conn.execute(
+        "INSERT INTO briefs (identity_id, format, topic, angle, hook, cta, difference_note, "
+        "exploration, created_at) VALUES ('selfhelp', ?, ?, 'a', 'h', 'follow', 'new', ?, ?)",
+        (fmt, topic, int(explore), f"{day}T09:00:00Z"),
+    )
+
+
+def candidates(ctx, limit: int = 5) -> dict:
+    return call_tool(ctx, "get_topic_candidates", {"identity": "selfhelp", "limit": limit})
+
+
+def test_get_topic_candidates_offers_one_topic_per_pillar_first(ctx):
+    result = candidates(ctx)
+    assert result["format"] == "C" and result["exploration"] is False
+    assert len(result["candidates"]) == 5
+    assert len({c["pillar"] for c in result["candidates"]}) == 5
+
+
+def test_get_topic_candidates_explores_mid_week(ctx):
+    add_brief(ctx, "Old explore", "2026-11-06", explore=True)  # last week: does not count
+    add_brief(ctx, "Never miss twice", "2026-11-10")
+    add_brief(ctx, "Clean as you go", "2026-11-11")
+    result = candidates(ctx)
+    assert result["briefs_this_week"] == 2 and result["explored_this_week"] == 0
+    assert result["exploration"] is True
+    assert result["candidates"] and all(c["explore"] for c in result["candidates"])
+
+
+def test_get_topic_candidates_skips_recent_topics(ctx):
+    add_brief(ctx, "Never miss twice", "2026-11-02")
+    offered = [c["topic"] for c in candidates(ctx, limit=50)["candidates"]]
+    assert "Never miss twice" not in offered and "Shrink the goal, keep the habit" in offered
+
+
+def test_get_topic_candidates_skips_bank_lines_that_fail_the_text_checks(ctx, tmp_path):
+    import shutil
+
+    config_dir = tmp_path / "config"
+    shutil.copytree(ctx.config_dir, config_dir)
+    playbook = config_dir / ctx.config.identities["selfhelp"].playbook
+    text = playbook.read_text(encoding="utf-8")
+    bad = "- Vote for the habit you want\n- My morning rule\n"
+    playbook.write_text(
+        text.replace("#### Focus and deep work\n", "#### Focus and deep work\n" + bad),
+        encoding="utf-8",
+    )
+    ctx.config_dir = config_dir
+    result = candidates(ctx, limit=50)
+    offered = [c["topic"] for c in result["candidates"]]
+    assert "Vote for the habit you want" not in offered and "My morning rule" not in offered
+    reasons = " ".join(s["reason"] for s in result["skipped"])
+    assert "'vote'" in reasons and "first person" in reasons
+
+
+def test_get_playbook_returns_structured_fields(ctx):
+    result = call_tool(ctx, "get_playbook", {"identity": "selfhelp"})
+    assert len(result["pillars"]) == 5 and "Politics" in result["banned"]
+    assert {"topic", "pillar", "explore"} <= set(result["topic_bank"][0])
+    assert result["learned"].startswith("Nothing yet")
+
+
+def test_submit_brief_refuses_banned_terms(ctx):
+    result = call_tool(ctx, "submit_brief", {**BRIEF, "topic": "Habits that cure procrastination"})
+    assert result["ok"] is False and "'cure'" in result["errors"][0]
+    assert ctx.conn.execute("SELECT COUNT(*) FROM briefs").fetchone()[0] == 0
+
+
+def test_submit_brief_refuses_the_first_person(ctx):
+    result = call_tool(ctx, "submit_brief", {**BRIEF, "hook": "My one rule for mornings"})
+    assert result["ok"] is False and "first person" in result["errors"][0]
+    assert ctx.conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
+
+
+def test_budget_status_shows_heygen_and_any_stop(ctx):
+    ctx.conn.execute(
+        "INSERT INTO budget_ledger (vendor, month, units, cost, charge_key) "
+        "VALUES ('anthropic', '2026-11', 60, 60, 'k2')"
+    )
+    status = call_tool(ctx, "budget_status", {})
+    assert status["heygen_credit_cap"] == ctx.config.engine.budgets.heygen.monthly_credit_cap
+    assert status["stops"] == ["Claude"]
+
+
+def test_a_library_asset_needs_its_licence_record(ctx):
+    """FR-ING-5: a fetched clip without a licence record is neither searchable nor usable."""
+    source(ctx, "pexels", "stock", kind="library", path=None, url="https://api.pexels.com/v1/")
+    clip = asset(ctx, "pexels", "stock", "e")
+    shot = [{"asset_id": clip, "in": 0, "out": 30, "role": "broll"}]
+
+    def listed() -> set[int]:
+        rows = call_tool(ctx, "search_library", {"query": "", "format": "C"})["results"]
+        return {r["asset_id"] for r in rows}
+
+    def problems() -> str:
+        return " | ".join(
+            rights_violations(ctx.conn, EditPlan.model_validate(plan(shot)), "C", TODAY)
+        )
+
+    assert clip not in listed()
+    assert f"asset {clip} has no licence record" in problems()
+    ctx.conn.execute(
+        "INSERT INTO asset_licences (asset_id, licence_url, terms, attribution) "
+        "VALUES (?, 'https://www.pexels.com/license/', 'Pexels licence', 'Video by A on Pexels')",
+        (clip,),
+    )
+    assert clip in listed()
+    assert problems() == ""

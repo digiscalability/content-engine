@@ -39,9 +39,45 @@ Two sections. **Rules** belong to Abbas and are never edited by the engine. **Le
 - YouTube "altered or synthetic content" = yes on every avatar post; the same on TikTok and Instagram when they are added (GR-5).
 - CTA: follow. Venture links from Phase 3 only where they fit.
 
-### Topic bank
+### Topic bank *(proposal; Abbas confirms or edits)*
 
-Filled with Abbas in slice P1.2.
+One group per pillar, plus Explore for topics that try new ground (about a fifth of each week, FR-PLN-2). The planner skips any topic used in the last 20 briefs and prefers the pillar used least recently. Topics carry no personal facts, no first person and none of the banned terms; a test holds every line to the same checks a script must pass.
+
+#### Discipline and habits
+- Make the first step embarrassingly small
+- Never miss twice
+- Design the room, not the willpower
+- Track the streak, not the mood
+
+#### Craft and mastery
+- Mise en place for any kind of work
+- Taste as you go: short feedback loops
+- Clean as you go
+- The tenth repetition is where standards show
+
+#### Resilience after setbacks
+- A bad day is data, not a verdict
+- A restart rule for the day after a lapse
+- Shrink the goal, keep the habit
+- Treat a setback as rehearsal for the next attempt
+
+#### Focus and deep work
+- One tab, one task
+- Protect the first hour
+- The hidden cost of switching
+- Boredom is the doorway to deep work
+
+#### Building things alone
+- Ship small, ship often
+- Write the checklist you wish you had
+- Done is a decision
+- Keep standards high with nobody watching
+
+#### Explore
+- What chess openings teach about routines
+- Silence as a tool
+- A written plan beats a remembered one
+- What a pit stop teaches about preparation
 
 ## Learned (retro-owned)
 

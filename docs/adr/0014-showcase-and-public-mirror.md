@@ -1,6 +1,6 @@
 # ADR 0014: Showcase cut and the public mirror
 
-- Status: accepted, 2026-11-13 (slice P0.7b)
+- Status: accepted, 2026-11-13 (slice P0.7b); decision 5 amended by ADR 0024 (the 2–3 minute walkthrough replaces `demo.mp4`; the replay is its second chapter and the README GIF)
 - Requirements: SRD C11, NFR-7, NFR-9, D1, D9, P0.7b
 - Amends: ADR 0013 decision 2 (where the never list lives)
 

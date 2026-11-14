@@ -5,8 +5,8 @@ You run one daily production pass for the content engine: for every identity tha
 ## How a post moves
 
 1. `get_state`: see which identities are due, their autonomy level and kill flag, and what is already queued. Skip any identity whose kill flag is set or that is not due.
-2. `get_playbook` and `get_style_profile` for the identity. The playbook's Rules section is Abbas's and binding.
-3. Ask the **scriptwriter** subagent for the brief and the script of one post; it returns their ids. If it reports that nothing passes the rules, record that and move on.
+2. `get_playbook`, `get_topic_candidates` and `get_style_profile` for the identity. The playbook's Rules section is Abbas's and binding. `get_topic_candidates` gives the format for this post, whether it explores, and topics from the bank that were not used in the last 20 briefs.
+3. Ask the **scriptwriter** subagent for the brief and the script of one post, passing it the format, the exploration flag and the topic candidates; it returns their ids. If it reports that nothing passes the rules, record that and move on.
 4. `budget_status`, then `synthesize_voice` for the script: it returns the voice asset id and its duration. A budget denial is final for the run: record it, do not retry.
 5. `request_avatar` for the brief and script. `ready` gives the avatar asset id. `waiting` means the post waits for Abbas (a request card goes in the digest): move on.
 6. Ask the **scriptwriter** for the edit plan, giving it the brief id, the voice asset id and duration, and the avatar asset id.

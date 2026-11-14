@@ -6,7 +6,13 @@ import pytest
 from engine.library.transcribe import Word
 from engine.produce.editplan import EditPlan
 from engine.produce.ffmpeg import MediaInfo
-from engine.produce.report import AssetFacts, build_render_report, parse_ebur128
+from engine.produce.report import (
+    AssetFacts,
+    build_render_report,
+    measure_text_box,
+    parse_bbox,
+    parse_ebur128,
+)
 
 INFO = MediaInfo(
     duration=20.0, width=1080, height=1920, fps=30.0, video_codec="h264", pix_fmt="yuv420p",
@@ -68,7 +74,7 @@ def test_report_has_loudness_resolution_and_caption_coverage():
 
 def test_report_without_captions_or_sound():
     r = report(words=[], loudness=(None, None))
-    assert r["captions"] == {"words": 0, "groups": 0, "coverage": None}
+    assert r["captions"] == {"words": 0, "groups": 0, "coverage": None, "box": None}
     assert r["loudness"]["integrated_lufs"] is None
 
 
@@ -86,3 +92,35 @@ SUMMARY = """[Parsed_ebur128_0 @ 0x1] Summary:
 def test_parse_ebur128_reads_the_summary_and_treats_silence_as_none():
     assert parse_ebur128(SUMMARY.format(i="-14.0", p="-1.3")) == (-14.0, -1.3)
     assert parse_ebur128(SUMMARY.format(i="-70.0", p="-inf")) == (None, None)
+
+
+def test_report_carries_the_measured_caption_box():
+    assert report(caption_box=[150, 1183, 930, 1275])["captions"]["box"] == [150, 1183, 930, 1275]
+
+
+BBOX = (
+    "[Parsed_bbox_2 @ 0x1] n:0 pts:0 pts_time:0 x1:150 x2:900 y1:1190 y2:1270 w:751 h:81\n"
+    "[Parsed_bbox_2 @ 0x1] n:1 pts:1 pts_time:0.5 x1:170 x2:930 y1:1183 y2:1275 w:761 h:93\n"
+)
+
+
+def test_parse_bbox_unions_the_frames_and_returns_none_when_nothing_shows():
+    assert parse_bbox(BBOX) == [150, 1183, 930, 1275]
+    assert parse_bbox("frame=  10 fps=0.0 q=-0.0 size=N/A") is None
+
+
+@pytest.mark.media  # runs ffmpeg (ADR 0024)
+def test_measure_text_box_reads_a_real_alpha_overlay(tmp_path):
+    import subprocess
+
+    overlay = tmp_path / "captions.mov"
+    source = (
+        "color=c=black@0.0:s=216x384:d=1:r=4,format=yuva444p,"
+        "drawbox=x=20:y=240:w=160:h=16:color=white@1.0:t=fill:replace=1"
+    )
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source, "-c:v", "prores_ks",
+         "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(overlay)],
+        check=True,
+    )  # fmt: skip
+    assert measure_text_box(overlay) == [20, 240, 179, 255]

@@ -10,8 +10,11 @@ import pytest
 
 from engine.publish.postiz import (
     POSTIZ_VERSION,
+    AnalyticsResult,
     ChannelSettings,
     FakePostiz,
+    MissingCandidate,
+    PostizAnalytics,
     PostizCLI,
     PostizError,
     Publisher,
@@ -46,6 +49,17 @@ class FakeCliRunner:
             out = ("✅ Post created successfully!", self.backend.raw_create(payload))
         elif command == "posts:list":
             out = ("📋 Posts:", self.backend.raw_list())
+        elif command == "analytics:post":
+            days = args[args.index("-d") + 1]
+            out = (f"📊 Analytics for post: {args[0]}", self.backend.raw_analytics(args[0], days))
+        elif command == "posts:missing":  # the real CLI prints no header line here
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(self.backend.raw_missing(args[0]), indent=2) + "\n", ""
+            )
+        elif command == "posts:connect":
+            release = args[args.index("--release-id") + 1]
+            out = (f"✅ Post {args[0]} connected to release {release}",
+                   self.backend.raw_connect(args[0], release))  # fmt: skip
         else:
             return subprocess.CompletedProcess(argv, 1, "", f"unknown command {command}")
         return subprocess.CompletedProcess(
@@ -161,3 +175,105 @@ def test_missing_npx_is_reported(tmp_path):
     )
     with pytest.raises(PostizError, match="Node"):
         cli.channel_settings("yt-1")
+
+
+# Metrics and reconciliation (FR-LRN-1, §10) ------------------------------------------------
+
+
+def published(pub, backend, release_id: str | None = "dQw4w9WgXcQ") -> str:
+    post_id = pub.create_draft(draft_payload("yt-1", "youtube", "a", [], {"title": "a"}, WHEN))
+    backend.schedule(post_id)
+    backend.publish(post_id, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", release_id)
+    return post_id
+
+
+def test_is_postiz_analytics(publisher):
+    assert isinstance(publisher[0], PostizAnalytics)
+
+
+def test_list_carries_the_release_id(publisher):
+    pub, backend = publisher
+    post_id = published(pub, backend)
+    (post,) = [p for p in pub.list_posts(WHEN, WHEN) if p.post_id == post_id]
+    assert post.release_id == "dQw4w9WgXcQ"
+
+
+def test_post_analytics_are_lifetime_totals_by_label(publisher):
+    pub, backend = publisher
+    post_id = published(pub, backend)
+    backend.set_metrics(post_id, Views=120, Likes=9, Comments=2, Favorites=0)
+    result = pub.post_analytics(post_id, 1)
+    assert result == AnalyticsResult(
+        missing=False, totals={"views": 120, "likes": 9, "comments": 2, "favorites": 0}
+    )
+
+
+def test_a_draft_has_no_analytics(publisher):
+    pub, _ = publisher
+    post_id = pub.create_draft(draft_payload("yt-1", "youtube", "a", [], {"title": "a"}, WHEN))
+    assert pub.post_analytics(post_id, 7) == AnalyticsResult(missing=False, totals={})
+
+
+def test_missing_release_is_found_and_connected(publisher):
+    pub, backend = publisher
+    post_id = pub.create_draft(draft_payload("tt-1", "tiktok", "a", [], {}, WHEN))
+    backend.publish_missing(post_id)
+    backend.candidates["tt-1"] = [{"id": "7321456789012345678", "url": "https://p/cover.jpg"}]
+    backend.metrics_for_release["7321456789012345678"] = {"Views": 40, "Shares": 3}
+    assert pub.post_analytics(post_id, 1) == AnalyticsResult(missing=True, totals={})
+    assert pub.missing_content(post_id) == [
+        MissingCandidate(release_id="7321456789012345678", url="https://p/cover.jpg")
+    ]
+    pub.connect(post_id, "7321456789012345678")
+    assert pub.missing_content(post_id) == []
+    assert pub.post_analytics(post_id, 1).totals == {"views": 40, "shares": 3}
+    (post,) = [p for p in pub.list_posts(WHEN, WHEN) if p.post_id == post_id]
+    assert post.release_id == "7321456789012345678"
+
+
+def test_cli_analytics_and_connect_arguments(tmp_path):
+    runner = FakeCliRunner(FakePostiz())
+    cli = PostizCLI(api_key=KEY, work_dir=tmp_path, run=runner, which=lambda n: NPX)
+    post_id = cli.create_draft(draft_payload("tt-1", "tiktok", "a", [], {}, WHEN))
+    runner.backend.publish_missing(post_id)
+    cli.post_analytics(post_id, 7)
+    cli.missing_content(post_id)
+    cli.connect(post_id, "7321")
+    argvs = [argv[3:] for argv, _ in runner.calls[1:]]
+    assert argvs == [
+        ["analytics:post", post_id, "-d", "7"],
+        ["posts:missing", post_id],
+        ["posts:connect", post_id, "--release-id", "7321"],
+    ]
+
+
+BAD_IDS = ["7321&calc", "a|b", 'x"y', "a b", "^%PATH%", "", "a" * 65, "../x"]
+
+
+@pytest.mark.parametrize("bad", BAD_IDS)
+def test_ids_from_postiz_never_reach_the_cmd_shim_unchecked(tmp_path, bad):
+    """npx is a .cmd shim, so cmd.exe parses its arguments: an id carrying & or | from a
+    Postiz or platform answer must be refused before any process starts (security review)."""
+    runner = FakeCliRunner(FakePostiz())
+    cli = PostizCLI(api_key=KEY, work_dir=tmp_path, run=runner, which=lambda n: NPX)
+    calls = [
+        lambda: cli.post_analytics(bad, 7),
+        lambda: cli.missing_content(bad),
+        lambda: cli.connect("post-1", bad),
+        lambda: cli.connect(bad, "7321"),
+        lambda: cli.channel_settings(bad),
+    ]
+    for call in calls:
+        with pytest.raises(PostizError, match="unsafe"):
+            call()
+    assert runner.calls == []
+
+
+def test_candidates_with_unsafe_ids_are_dropped(tmp_path):
+    backend = FakePostiz()
+    runner = FakeCliRunner(backend)
+    cli = PostizCLI(api_key=KEY, work_dir=tmp_path, run=runner, which=lambda n: NPX)
+    post_id = cli.create_draft(draft_payload("tt-1", "tiktok", "a", [], {}, WHEN))
+    backend.publish_missing(post_id)
+    backend.candidates["tt-1"] = [{"id": "7321&calc", "url": "u"}, {"id": "7321", "url": "u"}]
+    assert [c.release_id for c in cli.missing_content(post_id)] == ["7321"]

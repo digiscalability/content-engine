@@ -56,6 +56,7 @@ AGENTS: dict[str, AgentSpec] = {
             (
                 "get_state",
                 "get_playbook",
+                "get_topic_candidates",
                 "get_style_profile",
                 "get_trends",
                 "budget_status",
@@ -72,6 +73,7 @@ AGENTS: dict[str, AgentSpec] = {
             "Writes and stores the brief, script and edit plan for one post.",
             (
                 "get_playbook",
+                "get_topic_candidates",
                 "get_style_profile",
                 "search_library",
                 "submit_brief",

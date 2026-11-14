@@ -289,3 +289,78 @@ def test_source_rights_type_frozen_once_assets_exist(db):
     add_asset(db)
     with pytest.raises(sqlite3.IntegrityError, match="cannot change"):
         db.execute("UPDATE sources SET rights_type = 'public_domain' WHERE id = 'own-pics'")
+
+
+# P0.6b.2: licence records, tracks and stock requests (FR-ING-5, FR-ING-6; migration 0006) ---
+
+
+def add_stock_asset(db) -> int:
+    add_source(
+        db,
+        id="pexels",
+        rights_type="stock",
+        proof="Pexels licence",
+        kind="library",
+        path=None,
+        url="https://api.pexels.com/v1/videos/",
+        licence_url="https://www.pexels.com/license/",
+        attribution="Pexels",
+    )
+    return add_asset(
+        db,
+        source_id="pexels",
+        rights_type="stock",
+        licence_url="https://www.pexels.com/license/",
+        attribution="Pexels",
+    )
+
+
+LICENCE = {
+    "licence_url": "https://www.pexels.com/license/",
+    "terms": "Pexels licence",
+    "attribution": "Video by A on Pexels",
+    "provider": "pexels",
+    "provider_id": "123",
+}
+
+
+@pytest.mark.parametrize("blank", ["licence_url", "terms"])
+def test_licence_record_needs_url_and_terms(db, blank):
+    asset = add_stock_asset(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert(db, "asset_licences", {"asset_id": asset, **LICENCE, blank: " "})
+
+
+def test_one_licence_record_per_provider_item(db):
+    asset = add_stock_asset(db)
+    other = add_asset(
+        db,
+        source_id="pexels",
+        sha="b" * 64,
+        rights_type="stock",
+        licence_url="https://www.pexels.com/license/",
+        attribution="Pexels",
+    )
+    insert(db, "asset_licences", {"asset_id": asset, **LICENCE})
+    with pytest.raises(sqlite3.IntegrityError):
+        insert(db, "asset_licences", {"asset_id": other, **LICENCE})
+
+
+def test_track_energy_is_a_known_band(db):
+    asset = add_stock_asset(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert(db, "tracks", {"asset_id": asset, "title": "Calm", "energy": "loud"})
+
+
+def test_stock_request_needs_its_brief_and_a_query(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        insert(db, "stock_requests", {"brief_id": 999, "query": "ocean", "format": "C"})
+    add_identity_channel(db)
+    brief = add_brief(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert(db, "stock_requests", {"brief_id": brief, "query": "  ", "format": "C"})
+    insert(db, "stock_requests", {"brief_id": brief, "query": "ocean", "format": "C"})
+    with pytest.raises(sqlite3.IntegrityError):  # one request per beat query of a brief
+        insert(db, "stock_requests", {"brief_id": brief, "query": "ocean", "format": "C"})
+    status = db.execute("SELECT status FROM stock_requests").fetchone()[0]
+    assert status == "pending"

@@ -23,7 +23,8 @@ def sync_identities(conn: sqlite3.Connection, config: Config) -> None:
         conn.execute(
             "INSERT INTO identities (id, display_name, autonomy_level) VALUES (?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, "
-            "autonomy_level = excluded.autonomy_level",
+            "autonomy_level = CASE WHEN identities.kill_flag = 1 THEN 0 "  # L0 until ce resume
+            "ELSE excluded.autonomy_level END",
             (identity.id, identity.display_name, identity.autonomy_level),
         )
         for channel in identity.channels:

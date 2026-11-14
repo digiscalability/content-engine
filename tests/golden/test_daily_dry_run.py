@@ -13,6 +13,7 @@ import opentimelineio as otio
 import pytest
 
 from engine.agents.dryrun import BEATS, daily_dry_run
+from engine.agents.review import DETERMINISTIC, REVIEW
 from engine.config import load_config
 from engine.db import connect
 from engine.produce.ffmpeg import probe
@@ -59,7 +60,8 @@ def test_every_step_went_through_the_audited_tools(db):
     rows = db.execute("SELECT tool, status FROM tool_calls ORDER BY id").fetchall()
     tools = [r["tool"].removeprefix("mcp__engine__") for r in rows]
     assert tools == [
-        "get_state", "get_playbook", "get_style_profile", "search_library", "submit_brief",
+        "get_state", "get_playbook", "get_topic_candidates", "get_style_profile",
+        "search_library", "submit_brief",
         "submit_script", "budget_status", "synthesize_voice", "request_avatar",
         "submit_edit_plan", "render_post", "run_qa_checks", "get_render_report",
         "submit_qa_review", "create_draft",
@@ -118,11 +120,21 @@ def test_the_exports_open_with_the_same_cut(made):
 
 def test_the_qa_gate_passed_and_a_fake_draft_was_made(made, db):
     results = {r["check_name"]: r["result"] for r in db.execute("SELECT * FROM qa_results")}
-    assert results == dict.fromkeys(
-        ["rights", "disclosure", "banned_topics", "claims_about_abbas", "qa_review"], "pass"
-    )
-    post = db.execute("SELECT state, render_id, ai_disclosure, postiz_id FROM posts").fetchone()
-    assert tuple(post) == ("drafted", 1, 1, made.drafts[0])
+    assert results == dict.fromkeys([*DETERMINISTIC, REVIEW], "pass")
+    post = db.execute("SELECT render_id, ai_disclosure, postiz_id FROM posts").fetchone()
+    assert tuple(post) == (1, 1, made.drafts[0])
+
+
+def test_fake_abbas_publishes_it_and_reconcile_and_metrics_follow(result, db):
+    """P1.7: the private YouTube route to `published`, then a 24 h snapshot (FR-LRN-1)."""
+    post = db.execute("SELECT id, state, platform_id, published_at FROM posts").fetchone()
+    assert post["state"] == "published" and post["platform_id"] == f"dryrun{post['id']:05d}"
+    assert [(c.before, c.after) for c in result.follow_up.changes] == [
+        ("drafted", "uploaded_private"),
+        ("uploaded_private", "published"),
+    ]
+    snap = db.execute("SELECT at, views FROM metrics_snapshots WHERE post_id = ?", (post["id"],))
+    assert tuple(snap.fetchone()) == ("24h", 120)
 
 
 def test_the_run_report_names_the_draft(result):

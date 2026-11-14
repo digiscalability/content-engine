@@ -14,6 +14,7 @@ from engine.agents.state import advance_posts, start_run, sync_identities
 from engine.agents.tools import call_tool
 from engine.config import load_config
 from engine.db import open_db
+from engine.library.embeddings import FakeEmbedder
 from engine.library.transcribe import ScriptAlignedTranscriber
 from engine.produce.avatar import FakeAvatar
 from engine.produce.voice import FakeVoice
@@ -32,7 +33,14 @@ BRIEF = {
 CLEAN = [{"text": "Start smaller than feels serious, then keep going.", "target_s": 5}] * 7
 COPY = {"platform": "youtube", "title": "Start smaller", "caption": "One line a day.",
         "hashtags": ["#discipline"]}  # fmt: skip
-CHECKS = {"rights", "disclosure", "banned_topics", "claims_about_abbas"}
+CHECKS = {"rights", "disclosure", "banned_topics", "claims_about_abbas", "self_dedupe", "spec"}
+MEASURED = {  # what render_post measures, within every spec limit (FR-QA-4)
+    "duration": 35.0,
+    "plan_duration": 35.0,
+    "video": {"width": 1080, "height": 1920, "fps": 30.0},
+    "loudness": {"integrated_lufs": -14.1, "true_peak_dbtp": -1.5},
+    "captions": {"coverage": 1.0, "box": [170, 1183, 905, 1275]},
+}
 
 
 def with_fact_sheet(config, path):
@@ -60,6 +68,7 @@ def make_ctx(tmp_path, config) -> ToolContext:
         publisher=FakePostiz(),
         transcriber=ScriptAlignedTranscriber,
         overlay=None,
+        embedder=FakeEmbedder(),
     )
     return ToolContext(
         conn=conn, config=config, run_id="run-1", today=TODAY, providers=providers,
@@ -100,7 +109,7 @@ def rendered_post(ctx, beats=CLEAN) -> int:
     (folder / "post.mp4").write_bytes(b"mp4")
     words = [{"text": w, "start": 0.1, "end": 0.2} for b in beats for w in b["text"].split()]
     (folder / "words.json").write_text(json.dumps(words), "utf-8")
-    report = json.dumps({"scripts": [script["script_id"]]})  # render_post records the voiced one
+    report = json.dumps({"scripts": [script["script_id"]], **MEASURED})  # the voiced script
     render_id = ctx.conn.execute(
         "INSERT INTO renders (edit_plan_id, path, report) VALUES (?, ?, ?)",
         (plan_id, str(folder / "post.mp4"), report),
@@ -120,7 +129,7 @@ def checks(ctx, render_id) -> dict[str, str]:
     return {r["check_name"]: r["result"] for r in rows}
 
 
-def test_a_clean_post_passes_all_four_checks(ctx):
+def test_a_clean_post_passes_every_check(ctx):
     render_id = rendered_post(ctx)
     result = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
     assert result["ok"] and result["passed"] is True
@@ -174,14 +183,15 @@ def test_checks_run_once_per_render(ctx):
     first = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
     second = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
     assert first["checks"] == second["checks"]
-    assert ctx.conn.execute("SELECT COUNT(*) FROM qa_results").fetchone()[0] == 4
+    assert ctx.conn.execute("SELECT COUNT(*) FROM qa_results").fetchone()[0] == len(CHECKS)
 
 
 # The qa-reviewer (FR-QA-7) -------------------------------------------------------------------
 
 
-def review(ctx, render_id, verdict="pass", reasons=()):
-    args = {"render_id": render_id, "verdict": verdict, "reasons": list(reasons)}
+def review(ctx, render_id, verdict="pass", reasons=(), adds=("script", "visuals"), fits=True):
+    args = {"render_id": render_id, "verdict": verdict, "reasons": list(reasons),
+            "adds": list(adds), "fits_identity": fits}  # fmt: skip
     return call_tool(ctx, "submit_qa_review", args)
 
 
@@ -301,3 +311,139 @@ def test_qa_refuses_a_render_with_no_record_of_its_script(ctx):
     ctx.conn.execute("UPDATE renders SET report = NULL")
     result = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
     assert result["ok"] is False and "voiced script" in result["errors"][0]
+
+
+# Self-dedupe (FR-QA-3) -------------------------------------------------------------------------
+
+OTHER = [
+    {"text": "Silence is a tool: wait three seconds longer than feels easy.", "target_s": 5}
+] * 7
+
+
+def passed_and_drafted(ctx, beats=CLEAN) -> int:
+    """A post that went through QA and became a draft: it counts for self-dedupe."""
+    render_id = rendered_post(ctx, beats)
+    assert call_tool(ctx, "run_qa_checks", {"render_id": render_id})["passed"]
+    ctx.conn.execute("UPDATE posts SET state = 'drafted' WHERE render_id = ?", (render_id,))
+    return render_id
+
+
+def test_a_copied_script_fails_self_dedupe(ctx):
+    passed_and_drafted(ctx)
+    copy = rendered_post(ctx)
+    result = call_tool(ctx, "run_qa_checks", {"render_id": copy})
+    assert result["passed"] is False and checks(ctx, copy)["self_dedupe"] == "fail"
+    reason = next(c for c in result["checks"] if c["name"] == "self_dedupe")["reasons"][0]
+    assert "brief 1" in reason and "0.90" in reason
+
+
+def test_a_different_script_passes_self_dedupe(ctx):
+    passed_and_drafted(ctx)
+    other = rendered_post(ctx, OTHER)
+    assert call_tool(ctx, "run_qa_checks", {"render_id": other})["passed"] is True
+
+
+def test_failed_posts_do_not_count_for_self_dedupe(ctx):
+    first = passed_and_drafted(ctx)
+    ctx.conn.execute("UPDATE posts SET state = 'qa_failed' WHERE render_id = ?", (first,))
+    again = rendered_post(ctx)
+    assert call_tool(ctx, "run_qa_checks", {"render_id": again})["passed"] is True
+
+
+def test_self_dedupe_looks_back_only_so_far(ctx):
+    passed_and_drafted(ctx)
+    qa = ctx.config.engine.qa
+    lookback = qa.self_dedupe.model_copy(update={"lookback_posts": 1})
+    ctx.config = replace(
+        ctx.config,
+        engine=ctx.config.engine.model_copy(
+            update={"qa": qa.model_copy(update={"self_dedupe": lookback})}
+        ),
+    )
+    passed_and_drafted(ctx, OTHER)  # the one post inside the window
+    late_copy = rendered_post(ctx)
+    assert call_tool(ctx, "run_qa_checks", {"render_id": late_copy})["passed"] is True
+
+
+def test_qa_stores_the_script_embedding(ctx):
+    render_id = rendered_post(ctx)
+    call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    blob = ctx.conn.execute(
+        "SELECT script_embedding FROM renders WHERE id = ?", (render_id,)
+    ).fetchone()[0]
+    assert blob is not None and len(blob) == FakeEmbedder.dims * 4
+
+
+def test_a_render_checked_before_p13_gets_only_the_new_checks(ctx):
+    render_id = rendered_post(ctx)
+    for name in ("rights", "disclosure", "banned_topics", "claims_about_abbas"):
+        ctx.conn.execute(
+            "INSERT INTO qa_results (render_id, check_name, result, details) "
+            "VALUES (?, ?, 'pass', '{}')",
+            (render_id, name),
+        )
+    call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    assert ctx.conn.execute("SELECT COUNT(*) FROM qa_results").fetchone()[0] == len(CHECKS)
+
+
+@pytest.mark.model
+def test_a_reworded_script_fails_self_dedupe(tmp_path, config):
+    from engine.library.embeddings import BgeSmall
+
+    ctx = make_ctx(tmp_path, config)
+    ctx.providers = replace(ctx.providers, embedder=BgeSmall())
+    original = [
+        {"text": "Most plans fail before they start, so shrink the first step.", "target_s": 5},
+        {"text": "Open the file, write one line, then stop if you want.", "target_s": 5},
+        {"text": "Starting is the hard part; the rest follows a small win.", "target_s": 5},
+    ] * 3
+    reworded = [
+        {"text": "Most plans die before they begin, so make the first step tiny.", "target_s": 5},
+        {"text": "Open the document, write a single line, and stop if you like.", "target_s": 5},
+        {"text": "Starting is the hard bit; the rest follows one small win.", "target_s": 5},
+    ] * 3
+    passed_and_drafted(ctx, original)
+    copy = rendered_post(ctx, reworded)
+    call_tool(ctx, "run_qa_checks", {"render_id": copy})
+    assert checks(ctx, copy)["self_dedupe"] == "fail"
+
+
+# Spec (FR-QA-4) ---------------------------------------------------------------------------------
+
+
+def test_a_render_off_spec_fails_the_posts(ctx):
+    render_id = rendered_post(ctx)
+    report = json.loads(ctx.conn.execute("SELECT report FROM renders").fetchone()[0])
+    report["captions"]["box"] = [103, 1183, 980, 1275]  # under the button rail
+    ctx.conn.execute("UPDATE renders SET report = ?", (json.dumps(report),))
+    result = call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    assert result["passed"] is False and checks(ctx, render_id)["spec"] == "fail"
+    assert states(ctx) == ["qa_failed"]
+
+
+# The reviewer's checklist (FR-QA-7, GR-3) -------------------------------------------------------
+
+
+def test_the_review_stores_its_checklist(ctx):
+    render_id = rendered_post(ctx)
+    call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    assert review(ctx, render_id, adds=("script", "education"))["ok"]
+    details = ctx.conn.execute(
+        "SELECT details FROM qa_results WHERE check_name = 'qa_review'"
+    ).fetchone()[0]
+    assert json.loads(details) == {"reasons": [], "adds": ["script", "education"],
+                                   "fits_identity": True}  # fmt: skip
+
+
+def test_a_pass_with_one_addition_is_refused_and_the_post_waits(ctx):
+    render_id = rendered_post(ctx)
+    call_tool(ctx, "run_qa_checks", {"render_id": render_id})
+    refused = review(ctx, render_id, adds=("script",))
+    assert refused["ok"] is False and "GR-3" in " ".join(refused["errors"])
+    assert states(ctx) == ["rendered"]  # nothing stored: the reviewer can still answer
+
+
+def test_get_render_report_shows_the_difference_note(ctx):
+    render_id = rendered_post(ctx)
+    view = call_tool(ctx, "get_render_report", {"render_id": render_id})
+    assert view["brief"]["difference_note"] == BRIEF["difference_note"]

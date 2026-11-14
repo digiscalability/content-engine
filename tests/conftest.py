@@ -1,10 +1,19 @@
 import importlib.util
+import os
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def pytest_configure(config):
+    """CI sets CE_OFFLINE=1: any test that reaches the network then fails (ADR 0024)."""
+    if os.environ.get("CE_OFFLINE") == "1":
+        from network_guard import install
+
+        install()
 
 
 @pytest.fixture

@@ -122,3 +122,20 @@ def test_render_captions_hands_the_project_to_the_renderer(tmp_path):
     out = render_captions(SPEECH, 4.0, tmp_path / "proj", tmp_path / "captions.mov", FakeRenderer())
     assert out == tmp_path / "captions.mov"
     assert seen == [(tmp_path / "proj", tmp_path / "captions.mov")]
+
+
+def test_render_captions_groups_by_the_looks_word_count(tmp_path):
+    from engine.library.transcribe import Word
+    from engine.produce.captions import render_captions
+
+    class Recorder:
+        def render(self, project, output):
+            self.scene = (project / "compositions" / "captions.html").read_text("utf-8")
+            return output
+
+    words = [
+        Word(w, i * 0.4 + 0.1, i * 0.4 + 0.4) for i, w in enumerate(["a", "b", "c", "d", "e", "f"])
+    ]
+    recorder = Recorder()
+    render_captions(words, 3.0, tmp_path / "p", tmp_path / "c.mov", recorder, max_words=2)
+    assert recorder.scene.count('class="cap clip"') == 3

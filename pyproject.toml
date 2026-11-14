@@ -8,12 +8,19 @@ dependencies = [
     "claude-agent-sdk>=0.2.177,<0.3",
     "faster-whisper>=1.2",
     "httpx>=0.27",
+    "huggingface-hub>=0.30",
+    "numpy>=2.0",
     "nvidia-cublas-cu12>=12.8,<=12.9.1.4",
+    "onnxruntime>=1.20",
     "opentimelineio>=0.18,<0.19",
     "pydantic>=2.9",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
+    "rapidocr-onnxruntime==1.4.4",
+    "sqlite-vec==0.1.9",
+    "tokenizers>=0.20",
     "typer>=0.12",
+    "windows-toasts==1.3.1",
 ]
 
 [project.scripts]
@@ -36,11 +43,13 @@ module-root = ""
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not golden and not gpu and not live' --strict-markers"
+addopts = "-m 'not golden and not gpu and not live and not model' --strict-markers"
 markers = [
     "golden: golden render tests (ffmpeg + ffprobe); run with -m golden",
     "gpu: needs the RTX 5070; run with -m gpu",
+    "model: needs the cached embedding model (ce models fetch); run with -m model",
     "live: real vendor calls that cost money or touch real accounts; run with -m live",
+    "media: needs ffmpeg and ffprobe on PATH; runs by default, CI leaves it out (ADR 0024)",
 ]
 
 [tool.ruff]

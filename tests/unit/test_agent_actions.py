@@ -10,10 +10,12 @@ import pytest
 
 from engine.agents.context import Providers, ToolContext
 from engine.agents.dryrun import dry_run_config
+from engine.agents.review import DETERMINISTIC, REVIEW
 from engine.agents.state import start_run, sync_identities
 from engine.agents.tools import TOOLS, call_tool
 from engine.config import load_config
 from engine.db import open_db
+from engine.library.embeddings import FakeEmbedder
 from engine.library.transcribe import ScriptAlignedTranscriber
 from engine.produce.avatar import AvatarStatus, FakeAvatar
 from engine.produce.voice import FakeVoice
@@ -47,10 +49,12 @@ PROBE = {
 
 
 def fake_run(argv, env=None):
-    """ffprobe answers PROBE; ffmpeg (the fake avatar) writes its output file."""
+    """ffprobe answers PROBE; ffmpeg (the fake avatar) writes its output file. A command
+    ending in "-" writes to stdout, never to a file named "-" in the working directory."""
     if Path(argv[0]).stem == "ffprobe":
         return subprocess.CompletedProcess(argv, 0, json.dumps(PROBE), "")
-    Path(argv[-1]).write_bytes(b"video")
+    if argv[-1] != "-":
+        Path(argv[-1]).write_bytes(b"video")
     return subprocess.CompletedProcess(argv, 0, "", "")
 
 
@@ -71,6 +75,7 @@ def ctx(tmp_path, repo_root):
         publisher=FakePostiz(),
         transcriber=ScriptAlignedTranscriber,
         overlay=NoOverlay(),
+        embedder=FakeEmbedder(),
         run=fake_run,
     )
     return ToolContext(
@@ -264,7 +269,7 @@ def rendered(ctx, state: str = "rendered") -> int:
         "UPDATE posts SET state = ?, render_id = ? WHERE brief_id = ?", (state, render_id, brief_id)
     )
     if state == "qa_passed":  # the stored verdicts create_draft re-reads
-        for check in ("rights", "disclosure", "banned_topics", "claims_about_abbas", "qa_review"):
+        for check in (*DETERMINISTIC, REVIEW):
             ctx.conn.execute(
                 "INSERT INTO qa_results (render_id, check_name, result) VALUES (?, ?, 'pass')",
                 (render_id, check),
@@ -343,3 +348,55 @@ def test_render_post_refuses_a_voice_from_another_brief(ctx):
     ]
     result = call_tool(ctx, "render_post", {"edit_plan_id": plan_id})
     assert result["ok"] is False and "not a voiced script of brief" in result["errors"][0]
+
+
+def test_render_resolves_the_plans_look_or_the_default(ctx, tmp_path):
+    from engine.agents.actions import resolve_look
+    from engine.produce.editplan import LookRef
+    from engine.style.look import DEFAULT_LOOK, LookConfig, save_look
+
+    missing = resolve_look(ctx, LookRef(id="selfhelp", version=1))
+    assert missing == (DEFAULT_LOOK, None)
+    ctx.look_dirs = [tmp_path / "proposal"]
+    saved = save_look(LookConfig(id="selfhelp", version=1, name="Cool"), tmp_path / "proposal")
+    found, path = resolve_look(ctx, LookRef(id="selfhelp", version=1))
+    assert found.name == "Cool" and path == saved
+
+
+def test_render_post_waits_for_the_gpu_and_reports_a_busy_one(ctx, tmp_path):
+    from engine.ops.gpu_lock import GpuLock
+
+    brief_id, script_id = scripted(ctx)
+    voice = call_tool(ctx, "synthesize_voice", {"script_id": script_id})
+    avatar = call_tool(ctx, "request_avatar", {"brief_id": brief_id, "script_id": script_id})
+    plan = {
+        "timeline": [{"asset_id": avatar["asset_id"], "in": 0, "out": 16, "role": "avatar"},
+                     {"asset_id": avatar["asset_id"], "in": 0, "out": 16, "role": "avatar"}],
+        "audio": {"voice": [{"asset_id": voice["asset_id"], "at": 0, "out": 20}]},
+        "look": {"id": "selfhelp", "version": 1},
+    }  # fmt: skip
+    plan_id = call_tool(ctx, "submit_edit_plan", {"brief_id": brief_id, "plan": plan})[
+        "edit_plan_id"
+    ]
+    ctx.gpu_lock, ctx.gpu_lock_timeout_s = tmp_path / "gpu.lock", 0.2
+    with GpuLock(ctx.gpu_lock, job="indexing"):  # another job has the GPU
+        result = call_tool(ctx, "render_post", {"edit_plan_id": plan_id})
+    assert result["ok"] is False and "GPU is busy (indexing" in result["errors"][0]
+    assert ctx.conn.execute("SELECT COUNT(*) FROM renders").fetchone()[0] == 0
+
+
+def test_an_avatar_request_charges_heygen_credits_once(ctx):
+    brief_id, script_id = scripted(ctx)
+    call_tool(ctx, "synthesize_voice", {"script_id": script_id})
+    args = {"brief_id": brief_id, "script_id": script_id}
+    call_tool(ctx, "request_avatar", args)
+    call_tool(ctx, "request_avatar", args)  # a retry: no second charge
+    rows = ctx.conn.execute(
+        "SELECT units, charge_key FROM budget_ledger WHERE vendor = 'heygen'"
+    ).fetchall()
+    from engine.produce.ffmpeg import wav_duration
+
+    seconds = wav_duration(ctx.work_dir / "voice" / f"script-{script_id}.wav")
+    assert [(r["units"], r["charge_key"]) for r in rows] == [
+        (pytest.approx(seconds / 60, abs=1e-3), f"avatar:script:{script_id}")
+    ]  # the voiced audio's length at 1 credit a minute

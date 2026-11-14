@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from datetime import date
 
 from engine.agents.schemas import allowed_tiers
+from engine.library.search import LICENSED
 from engine.produce.editplan import FILM_EXCERPT_MAX_S, FILM_SHARE_MAX, EditPlan
 from engine.qa import CheckResult, verdict
 
@@ -36,13 +37,15 @@ def rights_violations(conn: sqlite3.Connection, plan: EditPlan, fmt: str, today:
     ]:
         row = conn.execute(
             "SELECT a.rights_type, a.people_release, a.media_kind, a.licence_expires_at, "
-            "s.expires_at AS source_expires FROM assets a JOIN sources s ON s.id = a.source_id "
-            "WHERE a.id = ?",
+            f"s.expires_at AS source_expires, {LICENSED} AS licensed "
+            "FROM assets a JOIN sources s ON s.id = a.source_id WHERE a.id = ?",
             (asset_id,),
         ).fetchone()
         if row is None:
             problems.append(f"{where}: no such asset {asset_id}")
             continue
+        if not row["licensed"]:
+            problems.append(f"{where}: asset {asset_id} has no licence record (FR-ING-5)")
         if row["rights_type"] not in tiers:
             problems.append(f"{where}: {row['rights_type']} footage is not allowed in format {fmt}")
         for expiry in (row["licence_expires_at"], row["source_expires"]):

@@ -8,7 +8,14 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    StringConstraints,
+    model_validator,
+)
 
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]*$")]
@@ -65,6 +72,11 @@ class SourceConfig(Model):
             raise ValueError(
                 "drive sources need volume_serial and volume_label (drive letters change, SRD 8.2)"
             )
+        if self.kind == "library" and not (self.path or self.url):
+            raise ValueError(
+                "library sources need a path (a local pool, such as music) or a url (a stock "
+                "API, such as Pexels) (ADR 0023)"
+            )
         if self.kind == "channel":
             if not self.url:
                 raise ValueError("channel sources need a url")
@@ -75,6 +87,11 @@ class SourceConfig(Model):
         if self.rights_type in LICENSED_TIERS and not (self.licence_url or "").strip():
             raise ValueError(
                 f"{self.rights_type} sources need a licence_url, a licence id or URL (FR-SRC-2)"
+            )
+        if self.rights_type in LICENSED_TIERS and self.attribution is None:
+            raise ValueError(
+                f"{self.rights_type} sources need an attribution, the credit text "
+                '(write attribution: "" when the licence asks for none) (FR-SRC-2)'
             )
         return self
 
@@ -194,9 +211,15 @@ class ElevenLabsBudget(Model):
     account_floor_chars: int = Field(ge=0)
 
 
+class HeyGenBudget(Model):
+    monthly_credit_cap: PositiveFloat
+    credits_per_minute: PositiveFloat  # the estimate per minute of avatar video
+
+
 class Budgets(Model):
     claude: ClaudeBudget
     elevenlabs: ElevenLabsBudget
+    heygen: HeyGenBudget
 
 
 class Paths(Model):
@@ -211,6 +234,7 @@ class Paths(Model):
     references_inbox: NonBlank
     reports: NonBlank
     logs: NonBlank
+    gpu_lock: NonBlank = "%LOCALAPPDATA%/content-engine/gpu.lock"  # §13, NFR-6
 
     def resolve(self, name: str, root: Path) -> Path:
         """The named path, with %VARS% expanded and relative paths taken from `root`."""
@@ -256,11 +280,22 @@ class SelfDedupeQA(Model):
     lookback_posts: PositiveInt
 
 
+class SafeZone(Model):
+    """Pixels of the frame a platform's UI covers on each side (FR-QA-4)."""
+
+    top: NonNegativeInt
+    bottom: NonNegativeInt
+    left: NonNegativeInt
+    right: NonNegativeInt
+
+
 class QA(Model):
     cross_identity: CrossIdentityQA
     self_dedupe: SelfDedupeQA
     fact_sheet: str = ""  # D9: read at run time, never copied into the repo (NFR-9)
     caption_coverage_min: Unit
+    loudness_tolerance_lu: float = Field(gt=0, le=3)
+    safe_zones: dict[Platform, SafeZone]
 
 
 class Render(Model):
@@ -275,6 +310,17 @@ class Loudness(Model):
     true_peak_dbtp: float = Field(le=0)
 
 
+class StockConfig(Model):
+    """FR-ING-5: stock fetched for the scriptwriter's weak beat queries, capped per day
+    (ADR 0023). `thin_below` is the CLIP score under which a beat's best match is weak."""
+
+    source: Slug = "pexels"  # a library source with a url in the sources config
+    daily_cap: int = Field(10, ge=0)  # clips a local day
+    per_request: PositiveInt = 2  # clips per beat query
+    max_clip_s: PositiveFloat = 30.0
+    thin_below: Unit = 0.23
+
+
 class EngineConfig(Model):
     agents: Agents
     budgets: Budgets
@@ -285,3 +331,4 @@ class EngineConfig(Model):
     qa: QA
     render: Render
     loudness: Loudness
+    stock: StockConfig = StockConfig()

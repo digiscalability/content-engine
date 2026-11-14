@@ -48,6 +48,15 @@ def test_the_fixture_library_is_rights_clean_cutaway_footage(config, tmp_path):
     assert {r["media_kind"] for r in results} == {"video"}
 
 
+def test_the_director_briefs_from_the_topic_candidates(config, tmp_path):
+    ctx = dryrun.start_dry_run(config, tmp_path, "dry-1", run=fake_run)
+    plan = call_tool(ctx, "get_topic_candidates", {"identity": "selfhelp"})
+    brief = dryrun.brief_for("selfhelp", plan)
+    assert brief["topic"] == plan["candidates"][0]["topic"]
+    assert (brief["format"], brief["exploration"]) == (plan["format"], plan["exploration"])
+    assert call_tool(ctx, "submit_brief", brief)["ok"]
+
+
 def test_the_scripted_post_obeys_the_rules():
     brief = BriefSubmission.model_validate(dryrun.brief_for("selfhelp"))
     script = ScriptSubmission.model_validate({"brief_id": 1, "beats": dryrun.BEATS})
